@@ -7,3 +7,4 @@ pyyaml
 tqdm
 tenacity
 loguru
+streamlit>=1.35.0
