@@ -1,0 +1,40 @@
+clinicaltrials_api:
+  base_url: "https://clinicaltrials.gov/api/v2/studies"
+  cdn_base_url: "https://cdn.clinicaltrials.gov/large-docs"
+  page_size: 100
+  request_delay_seconds: 1.0
+  max_retries: 3
+
+filters:
+  therapeutic_areas: ["Alzheimer Disease", "Non-Small Cell Lung Cancer", "Breast Cancer"]
+  phases: ["PHASE2", "PHASE3"]
+  study_status: ["COMPLETED"]
+  document_type: "Statistical Analysis Plan"
+  sponsor_types: []
+  date_completed_from: null
+  date_completed_to: null
+
+sampling:
+  max_per_ta: 3
+  max_total: 7
+  seed: 42
+
+storage:
+  base_path: "./sap_knowledge_base"
+  subdirs:
+    raw_pdfs: "raw_pdfs"
+    extracted_text: "extracted_text"
+    parsed_schemas: "parsed_schemas"
+    logs: "logs"
+  master_index_file: "master_index.csv"
+  overwrite_existing: false
+
+claude_api:
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 4000
+  extraction_prompt_file: "prompts/sap_extraction_prompt.txt"
+  output_format: "json"
+
+logging:
+  level: "INFO"
+  log_to_file: true

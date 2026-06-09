@@ -1,0 +1,9 @@
+requests
+pdfplumber
+pypdf
+anthropic
+pandas
+pyyaml
+tqdm
+tenacity
+loguru

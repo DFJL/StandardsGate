@@ -1,0 +1,10 @@
+sap_knowledge_base/
+.env
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+.venv/
+*.egg-info
+build/
+.DS_Store
