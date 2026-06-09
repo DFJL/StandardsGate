@@ -208,7 +208,7 @@ def process_uploaded_pdf(uploaded_file, config: dict) -> dict:
                     )
 
                 # --- Rule engine: derive SDTM / ADaM recommendations ---
-                schema = rule_engine.run_rules(schema)
+                schema = rule_engine.run_rules(schema, config)
                 return schema
     finally:
         try:
@@ -261,7 +261,7 @@ def lookup_from_index(nct_id: str, config: dict) -> dict:
         raise RuntimeError(f"Failed to read schema file {schema_path}: {exc}")
 
     # Re-run rule engine to ensure SDTM/ADaM recommendations are current
-    schema = rule_engine.run_rules(schema)
+    schema = rule_engine.run_rules(schema, config)
     return schema
 
 

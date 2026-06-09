@@ -168,7 +168,10 @@ def _post_process_schema(schema: dict, meta: dict, source_doc: str) -> dict:
     if not schema["metadata"].get("phase"):
         schema["metadata"]["phase"] = meta.get("phase", "")
 
-    # Rule engine MUST populate these — reset them here to be safe
+    # Reset to empty lists as a safeguard — the LLM recommendation engine
+    # (rule_engine.py, Step 4b) populates these via a second Claude API call
+    # after this step completes. Any values Claude may have extracted here
+    # are intentionally discarded in favour of the structured LLM output.
     schema["sdtm_domains_expected"] = []
     schema["adam_datasets_expected"] = []
 

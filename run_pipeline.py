@@ -384,7 +384,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             if schema:
                 nct_id = result.get("nct_id", "UNKNOWN")
                 # Run the deterministic rule engine
-                updated_schema = run_rules(schema)
+                updated_schema = run_rules(schema, config)
                 result["schema"] = updated_schema
 
                 # Persist the updated schema back to disk
