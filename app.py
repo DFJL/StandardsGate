@@ -6,9 +6,11 @@ from Statistical Analysis Plans. This is an AI copilot, not an auto-generator.
 All findings are presented as recommendations that require human review.
 """
 
+import copy
 import json
 import os
 import sys
+import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -631,6 +633,256 @@ def _tab_export(schema: dict):
 
 
 # ---------------------------------------------------------------------------
+# Tab: Pipeline
+# ---------------------------------------------------------------------------
+
+_TA_DISPLAY_OPTIONS = [
+    "Oncology",
+    "CNS / Alzheimer",
+    "Cardiovascular",
+    "Immunology / Autoimmune",
+    "Respiratory",
+    "Rare Disease",
+    "Diabetes / Metabolic",
+]
+
+_TA_QUERY_MAP = {
+    "Oncology": "oncology",
+    "CNS / Alzheimer": "alzheimer",
+    "Cardiovascular": "cardiovascular",
+    "Immunology / Autoimmune": "autoimmune",
+    "Respiratory": "respiratory",
+    "Rare Disease": "rare disease",
+    "Diabetes / Metabolic": "diabetes",
+}
+
+
+def _load_master_index(config: dict) -> pd.DataFrame:
+    """Load master_index.csv from the knowledge base. Returns empty DataFrame if not found."""
+    try:
+        storage_cfg = config["storage"]
+        base_path = Path(storage_cfg["base_path"])
+        index_path = base_path / storage_cfg["master_index_file"]
+        if not index_path.exists():
+            return pd.DataFrame()
+        df = pd.read_csv(index_path)
+        return df
+    except (FileNotFoundError, KeyError, Exception):
+        return pd.DataFrame()
+
+
+def _tab_pipeline():
+    from pipeline import step1_query, step2_download, step3_extract, step4_parse, step5_index, rule_engine
+    import json as _json
+
+    st.header("Pipeline — Knowledge Base Builder")
+    st.markdown(
+        "Query ClinicalTrials.gov for SAP documents, download PDFs, extract content "
+        "with Claude, and populate the knowledge base — all from this tab."
+    )
+
+    # ------------------------------------------------------------------
+    # Section 1: Knowledge Base Status
+    # ------------------------------------------------------------------
+    st.subheader("Knowledge Base Status")
+
+    index_df = _load_master_index(CONFIG)
+
+    total_saps = len(index_df)
+    if total_saps > 0 and "therapeutic_area" in index_df.columns:
+        unique_tas = index_df["therapeutic_area"].dropna().nunique()
+    else:
+        unique_tas = 0
+
+    if total_saps > 0 and "extraction_date" in index_df.columns:
+        last_run = index_df["extraction_date"].dropna().max()
+        last_run = str(last_run) if last_run else "—"
+    else:
+        last_run = "—"
+
+    kb_c1, kb_c2, kb_c3 = st.columns(3)
+    kb_c1.metric("Total SAPs in Knowledge Base", total_saps)
+    kb_c2.metric("Therapeutic Areas Covered", unique_tas)
+    kb_c3.metric("Last Run Date", last_run)
+
+    if total_saps > 0:
+        display_cols = [c for c in ["nct_id", "study_title", "therapeutic_area", "phase",
+                                     "extraction_confidence", "extraction_date"]
+                        if c in index_df.columns]
+        st.dataframe(
+            index_df[display_cols] if display_cols else index_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        storage_cfg = CONFIG["storage"]
+        base_path = Path(storage_cfg["base_path"])
+        index_path = base_path / storage_cfg["master_index_file"]
+        try:
+            csv_bytes = index_path.read_bytes()
+            st.download_button(
+                label="Download master_index.csv",
+                data=csv_bytes,
+                file_name="master_index.csv",
+                mime="text/csv",
+            )
+        except FileNotFoundError:
+            pass
+    else:
+        st.info("No SAPs in the knowledge base yet. Run the pipeline below to populate it.")
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # Section 2: Run Pipeline
+    # ------------------------------------------------------------------
+    st.subheader("Run Pipeline")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        st.warning(
+            "ANTHROPIC_API_KEY not configured — Steps 4 and 4b will be skipped. "
+            "Set the key in Streamlit secrets to enable Claude extraction."
+        )
+
+    with st.form("pipeline_form"):
+        selected_tas = st.multiselect(
+            "Therapeutic Areas to query",
+            options=_TA_DISPLAY_OPTIONS,
+            default=["Oncology", "CNS / Alzheimer"],
+        )
+
+        selected_phases = st.multiselect(
+            "Study Phases",
+            options=["PHASE1", "PHASE2", "PHASE3", "PHASE4"],
+            default=["PHASE2", "PHASE3"],
+        )
+
+        selected_statuses = st.multiselect(
+            "Study Status",
+            options=["COMPLETED", "ACTIVE_NOT_RECRUITING", "TERMINATED"],
+            default=["COMPLETED"],
+        )
+
+        col_n1, col_n2 = st.columns(2)
+        with col_n1:
+            max_per_ta = st.number_input(
+                "Max SAPs per TA", min_value=1, max_value=20, value=3, step=1
+            )
+        with col_n2:
+            max_total = st.number_input(
+                "Max total SAPs", min_value=1, max_value=50, value=7, step=1
+            )
+
+        overwrite = st.checkbox(
+            "Overwrite existing",
+            value=False,
+            help="Re-process NCT IDs already in the knowledge base",
+        )
+
+        run_clicked = st.form_submit_button(
+            "▶ Run Pipeline",
+            use_container_width=True,
+            type="primary",
+        )
+
+    if run_clicked:
+        if not selected_tas:
+            st.error("Please select at least one Therapeutic Area.")
+        elif not selected_phases:
+            st.error("Please select at least one Study Phase.")
+        elif not selected_statuses:
+            st.error("Please select at least one Study Status.")
+        else:
+            # Build config override
+            config_override = copy.deepcopy(CONFIG)
+            query_terms = [_TA_QUERY_MAP[ta] for ta in selected_tas if ta in _TA_QUERY_MAP]
+            config_override["filters"]["therapeutic_areas"] = query_terms
+            config_override["filters"]["phases"] = selected_phases
+            config_override["filters"]["study_status"] = selected_statuses
+            config_override["sampling"]["max_per_ta"] = int(max_per_ta)
+            config_override["sampling"]["max_total"] = int(max_total)
+            config_override["storage"]["overwrite_existing"] = overwrite
+
+            try:
+                with st.status("Running pipeline…", expanded=True) as status:
+                    # Step 1
+                    st.write("Querying ClinicalTrials.gov…")
+                    query_results = step1_query.run(config_override)
+                    st.write(f"Found {len(query_results)} studies with SAP documents.")
+
+                    if not query_results:
+                        status.update(
+                            label="Pipeline complete — no studies found.",
+                            state="complete",
+                            expanded=True,
+                        )
+                        st.info("No studies matching the selected filters were found.")
+                    else:
+                        # Step 2
+                        st.write("Downloading SAP PDFs…")
+                        download_results = step2_download.run(config_override, query_results)
+                        st.write(f"Downloaded {len(download_results)} PDFs.")
+
+                        # Step 3
+                        st.write("Extracting text from PDFs…")
+                        extraction_results = step3_extract.run(config_override, download_results)
+                        st.write(f"Extracted text from {len(extraction_results)} documents.")
+
+                        # Step 4 (Claude)
+                        if api_key:
+                            st.write("Parsing with Claude API (Step 4)…")
+                            parse_results = step4_parse.run(config_override, extraction_results)
+                            st.write(f"Parsed {len(parse_results)} schemas.")
+
+                            # Step 4b — rule engine
+                            st.write("Generating CDISC recommendations (Step 4b)…")
+                            storage_cfg = config_override["storage"]
+                            base_path = Path(storage_cfg["base_path"])
+                            schema_dir = base_path / storage_cfg["subdirs"]["parsed_schemas"]
+                            enriched_results = []
+                            for result in parse_results:
+                                schema_obj = result.get("schema")
+                                if schema_obj:
+                                    enriched = rule_engine.run_rules(schema_obj, config_override)
+                                    # Write updated schema back to disk
+                                    schema_path = result.get("schema_path")
+                                    if schema_path:
+                                        try:
+                                            with open(schema_path, "w", encoding="utf-8") as fh:
+                                                _json.dump(enriched, fh, indent=2, ensure_ascii=False)
+                                        except Exception:
+                                            pass
+                                    enriched_results.append({**result, "schema": enriched})
+                                else:
+                                    enriched_results.append(result)
+                            st.write(f"Rule engine applied to {len(enriched_results)} schemas.")
+                        else:
+                            st.write("Skipping Steps 4 and 4b (ANTHROPIC_API_KEY not set).")
+                            enriched_results = []
+
+                        # Step 5
+                        st.write("Updating knowledge base index…")
+                        step5_index.run(config_override, enriched_results)
+                        added = len(enriched_results)
+                        st.write(f"✅ Pipeline complete. {added} SAPs added to knowledge base.")
+
+                        status.update(
+                            label=f"Pipeline complete — {added} SAPs added.",
+                            state="complete",
+                            expanded=True,
+                        )
+
+                st.rerun()
+
+            except Exception as exc:
+                st.error(
+                    f"Pipeline failed with an error:\n\n"
+                    f"```\n{traceback.format_exc()}\n```"
+                )
+
+
+# ---------------------------------------------------------------------------
 # Main app
 # ---------------------------------------------------------------------------
 
@@ -650,6 +902,7 @@ def main():
         "ADaM Mapping",
         "Open Questions",
         "Export",
+        "Pipeline",
     ])
 
     with tabs[0]:
@@ -657,8 +910,12 @@ def main():
 
     schema = st.session_state.get("schema")
 
+    # Pipeline tab is always available (index 6), render it regardless of schema state
+    with tabs[6]:
+        _tab_pipeline()
+
     if schema is None:
-        for tab in tabs[1:]:
+        for tab in tabs[1:6]:
             with tab:
                 st.info(
                     "No SAP loaded. Use the **Input** tab to upload a PDF or look up a study.",
