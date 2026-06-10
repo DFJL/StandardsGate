@@ -931,14 +931,8 @@ def _tab_pipeline():
     st.divider()
 
     # ------------------------------------------------------------------
-    # Section 2: Live Pipeline Status (always shown if running or done)
     # ------------------------------------------------------------------
-    _render_pipeline_status()
-
-    st.divider()
-
-    # ------------------------------------------------------------------
-    # Section 3: Run Pipeline
+    # Section 2: Run Pipeline
     # ------------------------------------------------------------------
     st.subheader("Run Pipeline")
 
@@ -1026,8 +1020,11 @@ def _tab_pipeline():
                 daemon=False,
             )
             t.start()
-            st.toast("Pipeline started! Progress updates every few seconds.", icon="🚀")
+            st.toast("Pipeline started!", icon="🚀")
             st.rerun()
+
+    st.divider()
+    _render_pipeline_status()
 
 
 # ---------------------------------------------------------------------------
@@ -1086,12 +1083,6 @@ def main():
     with tabs[5]:
         _tab_export(schema)
 
-    # Auto-refresh while pipeline is active (sleep blocks this render thread briefly,
-    # then rerun picks up latest _PIPELINE_STATE written by the background thread)
-    if _PIPELINE_STATE["running"]:
-        import time as _time
-        _time.sleep(2)
-        st.rerun()
 
 
 if __name__ == "__main__":
