@@ -679,21 +679,34 @@ def _load_master_index(config: dict) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# ---------------------------------------------------------------------------
+# Thread-safe pipeline state (plain dict — readable from any thread)
+# ---------------------------------------------------------------------------
+_PIPELINE_STATE: dict = {
+    "running": False,
+    "pct": 0,
+    "msg": "",
+    "log": [],
+    "error": None,
+    "start_time": 0.0,
+}
+
+
 def _run_pipeline_thread(config_override: dict, api_key: str):
-    """Pipeline worker that runs in a background thread, writing progress to session_state."""
+    """Pipeline worker that runs in a background thread, writing progress to _PIPELINE_STATE."""
     from pipeline import step1_query, step2_download, step3_extract, step4_parse, step5_index, rule_engine
     import json as _json
 
     def _set(pct: int, msg: str, log: str = ""):
-        st.session_state["pipeline_pct"] = pct
-        st.session_state["pipeline_msg"] = msg
+        _PIPELINE_STATE["pct"] = pct
+        _PIPELINE_STATE["msg"] = msg
         if log:
-            st.session_state["pipeline_log"].append(log)
+            _PIPELINE_STATE["log"].append(log)
 
     try:
-        st.session_state["pipeline_running"] = True
-        st.session_state["pipeline_log"] = []
-        st.session_state["pipeline_error"] = None
+        _PIPELINE_STATE["running"] = True
+        _PIPELINE_STATE["log"] = []
+        _PIPELINE_STATE["error"] = None
 
         _set(0, "Step 1/5 — Querying ClinicalTrials.gov…", "Querying ClinicalTrials.gov…")
         query_results = step1_query.run(config_override)
@@ -756,30 +769,31 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
                 _kb_path = _Path(config_override["storage"]["base_path"])
                 uploaded = gdrive_sync.upload_knowledge_base(_kb_path)
                 if uploaded:
-                    st.session_state["pipeline_log"].append("☁️ Knowledge base synced to Google Drive.")
+                    _PIPELINE_STATE["log"].append("☁️ Knowledge base synced to Google Drive.")
                 else:
-                    st.session_state["pipeline_log"].append("⚠️ Google Drive sync failed — data saved locally only.")
+                    _PIPELINE_STATE["log"].append("⚠️ Google Drive sync failed — data saved locally only.")
 
     except Exception:
-        st.session_state["pipeline_error"] = traceback.format_exc()
-        st.session_state["pipeline_msg"] = "❌ Pipeline failed — see error below."
-        st.session_state["pipeline_pct"] = 0
+        _PIPELINE_STATE["error"] = traceback.format_exc()
+        _PIPELINE_STATE["msg"] = "❌ Pipeline failed — see error below."
+        _PIPELINE_STATE["pct"] = 0
     finally:
-        st.session_state["pipeline_running"] = False
+        _PIPELINE_STATE["running"] = False
 
 
 @st.fragment(run_every=3)
 def _pipeline_status_fragment():
     """Auto-refreshing fragment that shows pipeline progress. Must be module-level for stable identity."""
     import time as _time
-    if not (st.session_state.get("pipeline_running") or st.session_state.get("pipeline_pct", 0) > 0):
+    running = _PIPELINE_STATE["running"]
+    pct = _PIPELINE_STATE["pct"]
+    if not (running or pct > 0):
         return
 
-    pct = st.session_state.get("pipeline_pct", 0)
-    msg = st.session_state.get("pipeline_msg", "")
-    log = st.session_state.get("pipeline_log", [])
-    err = st.session_state.get("pipeline_error")
-    start = st.session_state.get("pipeline_start_time", _time.time())
+    msg = _PIPELINE_STATE["msg"]
+    log = list(_PIPELINE_STATE["log"])  # snapshot
+    err = _PIPELINE_STATE["error"]
+    start = _PIPELINE_STATE.get("start_time", _time.time())
     elapsed = _time.time() - start
     mins, secs = divmod(int(elapsed), 60)
     timer_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
@@ -787,26 +801,23 @@ def _pipeline_status_fragment():
     st.divider()
     st.subheader("Pipeline Progress")
 
-    if st.session_state.get("pipeline_running"):
-        st.progress(pct, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
+    if running:
+        st.progress(pct / 100, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
         st.caption("You can switch tabs — the pipeline continues in the background.")
     elif err:
-        st.progress(0, text="❌ Pipeline failed.")
+        st.progress(0.0, text="❌ Pipeline failed.")
         st.error(f"```\n{err}\n```")
     else:
-        st.progress(pct, text=f"{msg}  ·  ⏱ Total: {timer_str}")
+        st.progress(pct / 100, text=f"{msg}  ·  ⏱ Total: {timer_str}")
 
     if log:
-        with st.expander("Pipeline log", expanded=False):
-            for line in log:
+        with st.expander("Pipeline log", expanded=True):
+            for line in reversed(log):
                 st.write(line)
 
-    if not st.session_state.get("pipeline_running") and pct == 100:
+    if not running and pct == 100:
         if st.button("Clear & run again", key="clear_pipeline"):
-            st.session_state["pipeline_pct"] = 0
-            st.session_state["pipeline_msg"] = ""
-            st.session_state["pipeline_log"] = []
-            st.session_state["pipeline_error"] = None
+            _PIPELINE_STATE.update({"running": False, "pct": 0, "msg": "", "log": [], "error": None})
             st.rerun()
 
 
@@ -966,13 +977,6 @@ def _tab_pipeline():
             type="primary",
         )
 
-    # Initialise session state keys on first load
-    for _k, _v in [
-        ("pipeline_running", False), ("pipeline_pct", 0),
-        ("pipeline_msg", ""), ("pipeline_log", []), ("pipeline_error", None),
-    ]:
-        st.session_state.setdefault(_k, _v)
-
     if run_clicked:
         if not selected_tas:
             st.error("Please select at least one Therapeutic Area.")
@@ -980,7 +984,7 @@ def _tab_pipeline():
             st.error("Please select at least one Study Phase.")
         elif not selected_statuses:
             st.error("Please select at least one Study Status.")
-        elif st.session_state["pipeline_running"]:
+        elif _PIPELINE_STATE["running"]:
             st.warning("Pipeline is already running — wait for it to finish.")
         else:
             config_override = copy.deepcopy(CONFIG)
@@ -994,12 +998,14 @@ def _tab_pipeline():
 
             # Set running state BEFORE starting thread to avoid race condition
             import time as _time
-            st.session_state["pipeline_running"] = True
-            st.session_state["pipeline_pct"] = 0
-            st.session_state["pipeline_msg"] = "Starting pipeline…"
-            st.session_state["pipeline_log"] = []
-            st.session_state["pipeline_error"] = None
-            st.session_state["pipeline_start_time"] = _time.time()
+            _PIPELINE_STATE.update({
+                "running": True,
+                "pct": 0,
+                "msg": "Starting pipeline…",
+                "log": ["Pipeline started."],
+                "error": None,
+                "start_time": _time.time(),
+            })
 
             t = threading.Thread(
                 target=_run_pipeline_thread,
