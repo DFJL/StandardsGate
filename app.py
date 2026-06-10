@@ -780,8 +780,14 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
                     "TA": r.get("therapeutic_area", ""),
                     "Phase": r.get("phase", ""),
                     "Primary Endpoint": schema.get("primary_endpoint_type", ""),
-                    "SDTM Domains": ", ".join(schema.get("sdtm_domains_expected", [])),
-                    "ADaM Datasets": ", ".join(schema.get("adam_datasets_expected", [])),
+                    "SDTM Domains": ", ".join(
+                        d if isinstance(d, str) else d.get("domain", str(d))
+                        for d in schema.get("sdtm_domains_expected", [])
+                    ),
+                    "ADaM Datasets": ", ".join(
+                        d if isinstance(d, str) else d.get("dataset", str(d))
+                        for d in schema.get("adam_datasets_expected", [])
+                    ),
                     "Confidence": schema.get("extraction_confidence", ""),
                 })
             _PIPELINE_STATE["results"] = result_rows
