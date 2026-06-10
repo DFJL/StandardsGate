@@ -24,12 +24,16 @@ from loguru import logger
 # Constants
 # ---------------------------------------------------------------------------
 
-FOLDER_ID = "11sTq4iYAuRm0QRQIOVgnPZe_UPq1loPn"
-SCHEMAS_FOLDER_ID = "1Xnk1Hg23aajIITvKt92KmdpPfVxlcjy-"
-
-# Pre-created file IDs (owned by user account — service account updates, never creates)
-MASTER_INDEX_FILE_ID = "1THh11pwyrtbvaqxUeXqDWaYl-NzhX16f"
-SCHEMAS_BUNDLE_FILE_ID = "1akob2bzGojzgYPv8ZF7Rq8wwuplDCOzf"
+def _gdrive_config() -> dict:
+    """Load google_drive section from config.yaml."""
+    try:
+        import yaml
+        config_path = Path(__file__).parent.parent / "config.yaml"
+        with open(config_path, encoding="utf-8") as fh:
+            return yaml.safe_load(fh).get("google_drive", {})
+    except Exception as exc:
+        logger.error(f"[gdrive_sync] Could not load config.yaml: {exc}")
+        return {}
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
@@ -208,6 +212,7 @@ def upload_knowledge_base(base_path: Path) -> bool:
 
     Returns True on success, raises RuntimeError with details on failure.
     """
+    cfg = _gdrive_config()
     drive_service = _get_drive_service()
     if drive_service is None:
         raise RuntimeError("Could not build Drive service — check GOOGLE_SERVICE_ACCOUNT_JSON secret.")
@@ -218,7 +223,7 @@ def upload_knowledge_base(base_path: Path) -> bool:
     index_path = base_path / "master_index.csv"
     if index_path.exists():
         logger.info("[gdrive_sync] Uploading master_index.csv…")
-        ok, err = _update_file_by_id(drive_service, MASTER_INDEX_FILE_ID, index_path.read_bytes(), "text/csv")
+        ok, err = _update_file_by_id(drive_service, cfg["master_index_file_id"], index_path.read_bytes(), "text/csv")
         if ok:
             logger.info("[gdrive_sync] master_index.csv updated.")
         else:
@@ -239,7 +244,7 @@ def upload_knowledge_base(base_path: Path) -> bool:
                     pass
             logger.info(f"[gdrive_sync] Uploading schemas bundle ({len(bundle)} schemas)…")
             ok, err = _update_file_by_id(
-                drive_service, SCHEMAS_BUNDLE_FILE_ID,
+                drive_service, cfg["schemas_bundle_file_id"],
                 json.dumps(bundle, ensure_ascii=False, indent=2).encode("utf-8"),
                 "application/json",
             )
@@ -276,13 +281,14 @@ def download_knowledge_base(base_path: Path) -> bool:
         logger.warning("[gdrive_sync] download_knowledge_base called but Drive is not configured.")
         return False
 
+    cfg = _gdrive_config()
     any_downloaded = False
     base_path.mkdir(parents=True, exist_ok=True)
 
     # --- master_index.csv (always overwrite on cold start to get latest) ---
     index_dest = base_path / "master_index.csv"
     logger.info("[gdrive_sync] Downloading master_index.csv…")
-    ok = _download_file(drive_service, MASTER_INDEX_FILE_ID, index_dest)
+    ok = _download_file(drive_service, cfg["master_index_file_id"], index_dest)
     if ok:
         logger.info("[gdrive_sync] master_index.csv downloaded.")
         any_downloaded = True
@@ -293,7 +299,7 @@ def download_knowledge_base(base_path: Path) -> bool:
     schemas_dest = base_path / "parsed_schemas"
     schemas_dest.mkdir(parents=True, exist_ok=True)
     bundle_tmp = base_path / "_schemas_bundle_tmp.json"
-    ok = _download_file(drive_service, SCHEMAS_BUNDLE_FILE_ID, bundle_tmp)
+    ok = _download_file(drive_service, cfg["schemas_bundle_file_id"], bundle_tmp)
     if ok:
         try:
             bundle = json.loads(bundle_tmp.read_text(encoding="utf-8"))
