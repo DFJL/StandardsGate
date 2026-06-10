@@ -33,11 +33,6 @@ def _build_query_params(config: dict, ta: str, page_token: Optional[str] = None)
         # Filter to studies that have a SAP posted
         "filter.advanced": "AREA[LargeDocumentType]Statistical Analysis Plan",
         "filter.overallStatus": status_filter,
-        # Request large docs info so we can detect SAP presence
-        "fields": (
-            "NCTId,BriefTitle,OfficialTitle,LeadSponsorName,Condition,"
-            "Phase,OverallStatus,CompletionDate,LargeDocModule"
-        ),
         "pageSize": api_cfg["page_size"],
         "format": "json",
     }
