@@ -768,6 +768,48 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
         st.session_state["pipeline_running"] = False
 
 
+@st.fragment(run_every=3)
+def _pipeline_status_fragment():
+    """Auto-refreshing fragment that shows pipeline progress. Must be module-level for stable identity."""
+    import time as _time
+    if not (st.session_state.get("pipeline_running") or st.session_state.get("pipeline_pct", 0) > 0):
+        return
+
+    pct = st.session_state.get("pipeline_pct", 0)
+    msg = st.session_state.get("pipeline_msg", "")
+    log = st.session_state.get("pipeline_log", [])
+    err = st.session_state.get("pipeline_error")
+    start = st.session_state.get("pipeline_start_time", _time.time())
+    elapsed = _time.time() - start
+    mins, secs = divmod(int(elapsed), 60)
+    timer_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
+
+    st.divider()
+    st.subheader("Pipeline Progress")
+
+    if st.session_state.get("pipeline_running"):
+        st.progress(pct, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
+        st.caption("You can switch tabs — the pipeline continues in the background.")
+    elif err:
+        st.progress(0, text="❌ Pipeline failed.")
+        st.error(f"```\n{err}\n```")
+    else:
+        st.progress(pct, text=f"{msg}  ·  ⏱ Total: {timer_str}")
+
+    if log:
+        with st.expander("Pipeline log", expanded=False):
+            for line in log:
+                st.write(line)
+
+    if not st.session_state.get("pipeline_running") and pct == 100:
+        if st.button("Clear & run again", key="clear_pipeline"):
+            st.session_state["pipeline_pct"] = 0
+            st.session_state["pipeline_msg"] = ""
+            st.session_state["pipeline_log"] = []
+            st.session_state["pipeline_error"] = None
+            st.rerun()
+
+
 def _tab_pipeline():
     import threading
     from pipeline import step1_query  # noqa: imported for type reference only
@@ -967,51 +1009,8 @@ def _tab_pipeline():
             t.start()
             st.rerun()
 
-    # ── Live status display (shown whenever pipeline has run or is running) ──
-    @st.fragment(run_every=3)
-    def _pipeline_status():
-        if not (st.session_state.get("pipeline_running") or st.session_state.get("pipeline_pct", 0) > 0):
-            return
-
-        pct = st.session_state.get("pipeline_pct", 0)
-        msg = st.session_state.get("pipeline_msg", "")
-        log = st.session_state.get("pipeline_log", [])
-        err = st.session_state.get("pipeline_error")
-
-        st.divider()
-        st.subheader("Pipeline Progress")
-
-        if st.session_state.get("pipeline_running"):
-            import time as _time
-            elapsed = _time.time() - st.session_state.get("pipeline_start_time", _time.time())
-            mins, secs = divmod(int(elapsed), 60)
-            timer_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
-            st.progress(pct, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
-            st.caption("You can switch tabs — the pipeline continues in the background.")
-        elif err:
-            st.progress(0, text="❌ Pipeline failed.")
-            st.error(f"```\n{err}\n```")
-        else:
-            import time as _time
-            elapsed = _time.time() - st.session_state.get("pipeline_start_time", _time.time())
-            mins, secs = divmod(int(elapsed), 60)
-            timer_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
-            st.progress(pct, text=f"{msg}  ·  ⏱ Total: {timer_str}")
-
-        if log:
-            with st.expander("Pipeline log", expanded=False):
-                for line in log:
-                    st.write(line)
-
-        if not st.session_state.get("pipeline_running") and pct == 100:
-            if st.button("Clear & run again"):
-                st.session_state["pipeline_pct"] = 0
-                st.session_state["pipeline_msg"] = ""
-                st.session_state["pipeline_log"] = []
-                st.session_state["pipeline_error"] = None
-                st.rerun()
-
-    _pipeline_status()
+    # ── Live status display — uses module-level fragment for stable auto-refresh ──
+    _pipeline_status_fragment()
 
 
 # ---------------------------------------------------------------------------
