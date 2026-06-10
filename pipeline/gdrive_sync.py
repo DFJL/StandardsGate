@@ -26,6 +26,10 @@ from loguru import logger
 
 FOLDER_ID = "11sTq4iYAuRm0QRQIOVgnPZe_UPq1loPn"
 SCHEMAS_FOLDER_ID = "1Xnk1Hg23aajIITvKt92KmdpPfVxlcjy-"
+
+# Pre-created file IDs (owned by user account — service account updates, never creates)
+MASTER_INDEX_FILE_ID = "1THh11pwyrtbvaqxUeXqDWaYl-NzhX16f"
+SCHEMAS_BUNDLE_FILE_ID = "1akob2bzGojzgYPv8ZF7Rq8wwuplDCOzf"
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
@@ -181,22 +185,32 @@ def is_configured() -> bool:
     return _load_credentials_json() is not None
 
 
+def _update_file_by_id(drive_service, file_id: str, data: bytes, mime_type: str) -> tuple[bool, str]:
+    """Update an existing Drive file by ID. Never creates — avoids service-account quota issue."""
+    from googleapiclient.http import MediaIoBaseUpload  # noqa: PLC0415
+    try:
+        media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type, resumable=False)
+        drive_service.files().update(fileId=file_id, media_body=media).execute()
+        logger.debug(f"[gdrive_sync] Updated file id={file_id}")
+        return True, ""
+    except Exception as exc:
+        msg = str(exc)
+        logger.error(f"[gdrive_sync] Failed to update file id={file_id}: {msg}")
+        return False, msg
+
+
 def upload_knowledge_base(base_path: Path) -> bool:
     """
-    Upload the knowledge base to Google Drive.
+    Upload the knowledge base to Google Drive by updating pre-created files.
 
-    Uploads:
-      - ``base_path/master_index.csv``         → StandardsGate root folder
-      - ``base_path/parsed_schemas/*.json``    → parsed_schemas subfolder
+    - master_index.csv  → MASTER_INDEX_FILE_ID
+    - parsed_schemas/*.json bundled → SCHEMAS_BUNDLE_FILE_ID  (single JSON dict)
 
-    Overwrites existing files with the same name.
-
-    Returns True on overall success, False if any error occurred.
+    Returns True on success, raises RuntimeError with details on failure.
     """
     drive_service = _get_drive_service()
     if drive_service is None:
-        logger.error("[gdrive_sync] upload_knowledge_base: could not build Drive service — check GOOGLE_SERVICE_ACCOUNT_JSON secret.")
-        return False
+        raise RuntimeError("Could not build Drive service — check GOOGLE_SERVICE_ACCOUNT_JSON secret.")
 
     errors: list[str] = []
 
@@ -204,28 +218,37 @@ def upload_knowledge_base(base_path: Path) -> bool:
     index_path = base_path / "master_index.csv"
     if index_path.exists():
         logger.info("[gdrive_sync] Uploading master_index.csv…")
-        ok, err = _upload_file(drive_service, index_path, "master_index.csv", FOLDER_ID, mime_type="text/csv")
+        ok, err = _update_file_by_id(drive_service, MASTER_INDEX_FILE_ID, index_path.read_bytes(), "text/csv")
         if ok:
-            logger.info("[gdrive_sync] master_index.csv uploaded successfully.")
+            logger.info("[gdrive_sync] master_index.csv updated.")
         else:
             errors.append(f"master_index.csv: {err}")
     else:
         logger.warning(f"[gdrive_sync] master_index.csv not found at {index_path} — skipping.")
 
-    # --- parsed_schemas/*.json ---
+    # --- schemas bundle (all JSONs merged into one file) ---
     schemas_dir = base_path / "parsed_schemas"
     if schemas_dir.is_dir():
         json_files = list(schemas_dir.glob("*.json"))
         if json_files:
-            logger.info(f"[gdrive_sync] Uploading {len(json_files)} JSON schema(s)…")
-            for json_path in json_files:
-                ok, err = _upload_file(drive_service, json_path, json_path.name, SCHEMAS_FOLDER_ID, mime_type="application/json")
-                if not ok:
-                    errors.append(f"{json_path.name}: {err}")
-            if not errors:
-                logger.info("[gdrive_sync] Schema upload complete.")
+            bundle = {}
+            for jp in json_files:
+                try:
+                    bundle[jp.stem] = json.loads(jp.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            logger.info(f"[gdrive_sync] Uploading schemas bundle ({len(bundle)} schemas)…")
+            ok, err = _update_file_by_id(
+                drive_service, SCHEMAS_BUNDLE_FILE_ID,
+                json.dumps(bundle, ensure_ascii=False, indent=2).encode("utf-8"),
+                "application/json",
+            )
+            if ok:
+                logger.info("[gdrive_sync] schemas_bundle.json updated.")
+            else:
+                errors.append(f"schemas_bundle.json: {err}")
         else:
-            logger.info("[gdrive_sync] No JSON schemas found in parsed_schemas/ — nothing to upload.")
+            logger.info("[gdrive_sync] No JSON schemas found — skipping bundle upload.")
     else:
         logger.warning(f"[gdrive_sync] parsed_schemas/ not found at {schemas_dir} — skipping.")
 
@@ -254,45 +277,36 @@ def download_knowledge_base(base_path: Path) -> bool:
         return False
 
     any_downloaded = False
+    base_path.mkdir(parents=True, exist_ok=True)
 
-    # --- master_index.csv ---
+    # --- master_index.csv (always overwrite on cold start to get latest) ---
     index_dest = base_path / "master_index.csv"
-    if index_dest.exists():
-        logger.info("[gdrive_sync] master_index.csv already exists locally — skipping download.")
+    logger.info("[gdrive_sync] Downloading master_index.csv…")
+    ok = _download_file(drive_service, MASTER_INDEX_FILE_ID, index_dest)
+    if ok:
+        logger.info("[gdrive_sync] master_index.csv downloaded.")
+        any_downloaded = True
     else:
-        file_id = _find_file_in_folder(drive_service, "master_index.csv", FOLDER_ID)
-        if file_id:
-            logger.info("[gdrive_sync] Downloading master_index.csv from Drive…")
-            base_path.mkdir(parents=True, exist_ok=True)
-            ok = _download_file(drive_service, file_id, index_dest)
-            if ok:
-                logger.info("[gdrive_sync] master_index.csv downloaded successfully.")
-                any_downloaded = True
-            else:
-                logger.error("[gdrive_sync] Failed to download master_index.csv.")
-        else:
-            logger.info("[gdrive_sync] master_index.csv not found in Drive root folder.")
+        logger.error("[gdrive_sync] Failed to download master_index.csv.")
 
-    # --- parsed_schemas/*.json ---
+    # --- schemas bundle → unpack into parsed_schemas/ ---
     schemas_dest = base_path / "parsed_schemas"
-    remote_files = _list_files_in_folder(drive_service, SCHEMAS_FOLDER_ID)
-    if remote_files:
-        logger.info(f"[gdrive_sync] Found {len(remote_files)} JSON schema(s) in Drive — checking local copies…")
-        schemas_dest.mkdir(parents=True, exist_ok=True)
-        for remote_file in remote_files:
-            file_id = remote_file["id"]
-            filename = remote_file["name"]
-            local_path = schemas_dest / filename
-            if local_path.exists():
-                logger.debug(f"[gdrive_sync] {filename} already exists locally — skipping.")
-                continue
-            logger.info(f"[gdrive_sync] Downloading {filename}…")
-            ok = _download_file(drive_service, file_id, local_path)
-            if ok:
+    schemas_dest.mkdir(parents=True, exist_ok=True)
+    bundle_tmp = base_path / "_schemas_bundle_tmp.json"
+    ok = _download_file(drive_service, SCHEMAS_BUNDLE_FILE_ID, bundle_tmp)
+    if ok:
+        try:
+            bundle = json.loads(bundle_tmp.read_text(encoding="utf-8"))
+            for nct_id, schema in bundle.items():
+                dest = schemas_dest / f"{nct_id}.json"
+                dest.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
+            bundle_tmp.unlink(missing_ok=True)
+            logger.info(f"[gdrive_sync] Unpacked {len(bundle)} schemas from bundle.")
+            if bundle:
                 any_downloaded = True
-            else:
-                logger.error(f"[gdrive_sync] Failed to download {filename}.")
+        except Exception as exc:
+            logger.error(f"[gdrive_sync] Failed to unpack schemas bundle: {exc}")
     else:
-        logger.info("[gdrive_sync] No JSON schemas found in Drive parsed_schemas folder.")
+        logger.info("[gdrive_sync] schemas_bundle.json not found or empty — skipping.")
 
     return any_downloaded
