@@ -62,24 +62,30 @@ def _get_drive_service():
     Returns None if credentials are unavailable (graceful degradation).
     """
     creds_json = _load_credentials_json()
-    if not creds_json:
+    if not creds_json is None and creds_json == "":
+        logger.error("[gdrive_sync] GOOGLE_SERVICE_ACCOUNT_JSON is empty.")
+        return None
+    if creds_json is None:
+        logger.error("[gdrive_sync] GOOGLE_SERVICE_ACCOUNT_JSON not found in secrets or env.")
         return None
 
     try:
         from google.oauth2.service_account import Credentials  # noqa: PLC0415
         from googleapiclient.discovery import build  # noqa: PLC0415
 
-        # Streamlit secrets may return the value as a dict (TOML object) or string
-        if isinstance(creds_json, dict):
-            creds_dict = creds_json
-        else:
+        # Normalize to plain dict — Streamlit secrets returns AttrDict or str
+        if isinstance(creds_json, str):
             creds_dict = json.loads(creds_json)
+        else:
+            # AttrDict / dict-like — round-trip through JSON to get a plain dict
+            creds_dict = json.loads(json.dumps(dict(creds_json)))
 
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        logger.info("[gdrive_sync] Drive service built successfully.")
         return service
     except Exception as exc:
-        logger.error(f"[gdrive_sync] Failed to build Drive service: {exc}")
+        logger.error(f"[gdrive_sync] Failed to build Drive service: {exc}", exc_info=True)
         return None
 
 

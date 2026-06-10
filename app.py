@@ -796,11 +796,15 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
             if gdrive_sync.is_configured():
                 from pathlib import Path as _Path
                 _kb_path = _Path(config_override["storage"]["base_path"])
-                uploaded = gdrive_sync.upload_knowledge_base(_kb_path)
-                if uploaded:
-                    _PIPELINE_STATE["log"].append("☁️ Knowledge base synced to Google Drive.")
-                else:
-                    _PIPELINE_STATE["log"].append("⚠️ Google Drive sync failed — data saved locally only.")
+                _PIPELINE_STATE["log"].append("☁️ Connecting to Google Drive…")
+                try:
+                    uploaded = gdrive_sync.upload_knowledge_base(_kb_path)
+                    if uploaded:
+                        _PIPELINE_STATE["log"].append("☁️ Knowledge base synced to Google Drive.")
+                    else:
+                        _PIPELINE_STATE["log"].append("⚠️ Google Drive upload returned False — check Streamlit logs for details.")
+                except Exception as _gdrive_exc:
+                    _PIPELINE_STATE["log"].append(f"⚠️ Google Drive sync exception: {_gdrive_exc}")
 
     except Exception:
         _PIPELINE_STATE["error"] = traceback.format_exc()
