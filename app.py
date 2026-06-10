@@ -958,22 +958,22 @@ def _tab_pipeline():
             st.rerun()
 
     # ── Live status display (shown whenever pipeline has run or is running) ──
-    if st.session_state["pipeline_running"] or st.session_state["pipeline_pct"] > 0:
-        pct = st.session_state["pipeline_pct"]
-        msg = st.session_state["pipeline_msg"]
-        log = st.session_state["pipeline_log"]
-        err = st.session_state["pipeline_error"]
+    @st.fragment(run_every=3)
+    def _pipeline_status():
+        if not (st.session_state.get("pipeline_running") or st.session_state.get("pipeline_pct", 0) > 0):
+            return
+
+        pct = st.session_state.get("pipeline_pct", 0)
+        msg = st.session_state.get("pipeline_msg", "")
+        log = st.session_state.get("pipeline_log", [])
+        err = st.session_state.get("pipeline_error")
 
         st.divider()
         st.subheader("Pipeline Progress")
 
-        if st.session_state["pipeline_running"]:
+        if st.session_state.get("pipeline_running"):
             st.progress(pct, text=msg)
             st.caption("You can switch tabs — the pipeline continues in the background.")
-            # Auto-refresh every 2 s while running
-            import time as _time
-            _time.sleep(2)
-            st.rerun()
         elif err:
             st.progress(0, text="❌ Pipeline failed.")
             st.error(f"```\n{err}\n```")
@@ -985,13 +985,15 @@ def _tab_pipeline():
                 for line in log:
                     st.write(line)
 
-        if not st.session_state["pipeline_running"] and pct == 100:
+        if not st.session_state.get("pipeline_running") and pct == 100:
             if st.button("Clear & run again"):
                 st.session_state["pipeline_pct"] = 0
                 st.session_state["pipeline_msg"] = ""
                 st.session_state["pipeline_log"] = []
                 st.session_state["pipeline_error"] = None
                 st.rerun()
+
+    _pipeline_status()
 
 
 # ---------------------------------------------------------------------------
