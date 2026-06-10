@@ -828,11 +828,11 @@ def _tab_pipeline():
                         if c in filtered_df.columns]
         display_df = filtered_df[display_cols].copy() if display_cols else filtered_df.copy()
 
-        # Make NCT IDs clickable links to ClinicalTrials.gov
+        # Keep original NCT IDs for display, add separate URL column
         if "nct_id" in display_df.columns:
-            display_df["nct_id"] = display_df["nct_id"].apply(
+            display_df.insert(1, "ct_url", display_df["nct_id"].apply(
                 lambda x: f"https://clinicaltrials.gov/study/{x}" if pd.notna(x) else x
-            )
+            ))
 
         st.caption(f"Showing {len(filtered_df)} of {total_saps} SAPs")
         st.dataframe(
@@ -840,7 +840,8 @@ def _tab_pipeline():
             width="stretch",
             hide_index=True,
             column_config={
-                "nct_id": st.column_config.LinkColumn("NCT ID", display_text=r"NCT\d+"),
+                "nct_id": st.column_config.TextColumn("NCT ID", width="small"),
+                "ct_url": st.column_config.LinkColumn("↗", display_text="View", width="small"),
                 "study_title": st.column_config.TextColumn("Study Title", width="large"),
                 "therapeutic_area": st.column_config.TextColumn("Therapeutic Area"),
                 "phase": st.column_config.TextColumn("Phase", width="small"),
@@ -950,11 +951,13 @@ def _tab_pipeline():
             config_override["storage"]["overwrite_existing"] = overwrite
 
             # Set running state BEFORE starting thread to avoid race condition
+            import time as _time
             st.session_state["pipeline_running"] = True
             st.session_state["pipeline_pct"] = 0
             st.session_state["pipeline_msg"] = "Starting pipeline…"
             st.session_state["pipeline_log"] = []
             st.session_state["pipeline_error"] = None
+            st.session_state["pipeline_start_time"] = _time.time()
 
             t = threading.Thread(
                 target=_run_pipeline_thread,
@@ -979,13 +982,21 @@ def _tab_pipeline():
         st.subheader("Pipeline Progress")
 
         if st.session_state.get("pipeline_running"):
-            st.progress(pct, text=msg)
+            import time as _time
+            elapsed = _time.time() - st.session_state.get("pipeline_start_time", _time.time())
+            mins, secs = divmod(int(elapsed), 60)
+            timer_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
+            st.progress(pct, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
             st.caption("You can switch tabs — the pipeline continues in the background.")
         elif err:
             st.progress(0, text="❌ Pipeline failed.")
             st.error(f"```\n{err}\n```")
         else:
-            st.progress(pct, text=msg)
+            import time as _time
+            elapsed = _time.time() - st.session_state.get("pipeline_start_time", _time.time())
+            mins, secs = divmod(int(elapsed), 60)
+            timer_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
+            st.progress(pct, text=f"{msg}  ·  ⏱ Total: {timer_str}")
 
         if log:
             with st.expander("Pipeline log", expanded=False):
