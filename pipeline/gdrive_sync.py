@@ -33,14 +33,17 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _load_credentials_json() -> str | None:
-    """Return the service-account JSON string from secrets or env, or None."""
+def _load_credentials_json():
+    """
+    Return the service-account credentials from secrets or env, or None.
+    May return a dict (if stored as TOML object in Streamlit secrets) or a str.
+    """
     # 1. Streamlit secrets (available only when running inside Streamlit)
     try:
         import streamlit as st  # noqa: PLC0415 – optional import
         secret = st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON")
         if secret:
-            return str(secret)
+            return secret  # may be dict or string — _get_drive_service handles both
     except Exception:
         pass  # Not running in Streamlit, or secrets not configured
 
@@ -66,7 +69,12 @@ def _get_drive_service():
         from google.oauth2.service_account import Credentials  # noqa: PLC0415
         from googleapiclient.discovery import build  # noqa: PLC0415
 
-        creds_dict = json.loads(creds_json)
+        # Streamlit secrets may return the value as a dict (TOML object) or string
+        if isinstance(creds_json, dict):
+            creds_dict = creds_json
+        else:
+            creds_dict = json.loads(creds_json)
+
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
         return service
@@ -182,7 +190,7 @@ def upload_knowledge_base(base_path: Path) -> bool:
     """
     drive_service = _get_drive_service()
     if drive_service is None:
-        logger.warning("[gdrive_sync] upload_knowledge_base called but Drive is not configured.")
+        logger.error("[gdrive_sync] upload_knowledge_base: could not build Drive service — check GOOGLE_SERVICE_ACCOUNT_JSON secret.")
         return False
 
     success = True
