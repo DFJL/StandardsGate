@@ -671,9 +671,88 @@ def _load_master_index(config: dict) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _tab_pipeline():
+def _run_pipeline_thread(config_override: dict, api_key: str):
+    """Pipeline worker that runs in a background thread, writing progress to session_state."""
     from pipeline import step1_query, step2_download, step3_extract, step4_parse, step5_index, rule_engine
     import json as _json
+
+    def _set(pct: int, msg: str, log: str = ""):
+        st.session_state["pipeline_pct"] = pct
+        st.session_state["pipeline_msg"] = msg
+        if log:
+            st.session_state["pipeline_log"].append(log)
+
+    try:
+        st.session_state["pipeline_running"] = True
+        st.session_state["pipeline_log"] = []
+        st.session_state["pipeline_error"] = None
+
+        _set(0, "Step 1/5 — Querying ClinicalTrials.gov…", "Querying ClinicalTrials.gov…")
+        query_results = step1_query.run(config_override)
+        _set(20, f"Step 1/5 complete — {len(query_results)} studies found.",
+             f"Found {len(query_results)} studies with SAP documents.")
+
+        if not query_results:
+            _set(100, "Done — no studies found.", "No studies matched the selected filters.")
+        else:
+            _set(20, "Step 2/5 — Downloading SAP PDFs…", "Downloading SAP PDFs…")
+            download_results = step2_download.run(config_override, query_results)
+            _set(40, f"Step 2/5 complete — {len(download_results)} PDFs downloaded.",
+                 f"Downloaded {len(download_results)} PDFs.")
+
+            _set(40, "Step 3/5 — Extracting text from PDFs…", "Extracting text from PDFs…")
+            extraction_results = step3_extract.run(config_override, download_results)
+            _set(60, f"Step 3/5 complete — {len(extraction_results)} documents extracted.",
+                 f"Extracted text from {len(extraction_results)} documents.")
+
+            if api_key:
+                _set(60, "Step 4/5 — Parsing with Claude API…", "Parsing with Claude API…")
+                parse_results = step4_parse.run(config_override, extraction_results)
+                _set(75, f"Step 4/5 complete — {len(parse_results)} schemas parsed.",
+                     f"Parsed {len(parse_results)} schemas.")
+
+                _set(75, "Step 4b/5 — Generating CDISC recommendations…",
+                     "Generating CDISC recommendations…")
+                enriched_results = []
+                for idx, result in enumerate(parse_results):
+                    pct = 75 + int(15 * (idx + 1) / max(len(parse_results), 1))
+                    _set(pct, f"Step 4b/5 — Recommending for study {idx+1}/{len(parse_results)}…")
+                    schema_obj = result.get("schema")
+                    if schema_obj:
+                        enriched = rule_engine.run_rules(schema_obj, config_override)
+                        schema_path = result.get("schema_path")
+                        if schema_path:
+                            try:
+                                with open(schema_path, "w", encoding="utf-8") as fh:
+                                    _json.dump(enriched, fh, indent=2, ensure_ascii=False)
+                            except Exception:
+                                pass
+                        enriched_results.append({**result, "schema": enriched})
+                    else:
+                        enriched_results.append(result)
+                _set(90, f"Step 4b/5 complete — {len(enriched_results)} recommendations generated.",
+                     f"CDISC recommendations generated for {len(enriched_results)} schemas.")
+            else:
+                _set(62, "Skipping Steps 4/4b — no API key.", "Skipping Steps 4 and 4b (no API key).")
+                enriched_results = []
+
+            _set(90, "Step 5/5 — Updating knowledge base index…", "Updating knowledge base index…")
+            step5_index.run(config_override, enriched_results)
+            added = len(enriched_results)
+            _set(100, f"✅ Done — {added} SAPs added to knowledge base.",
+                 f"✅ Pipeline complete. {added} SAPs added to knowledge base.")
+
+    except Exception:
+        st.session_state["pipeline_error"] = traceback.format_exc()
+        st.session_state["pipeline_msg"] = "❌ Pipeline failed — see error below."
+        st.session_state["pipeline_pct"] = 0
+    finally:
+        st.session_state["pipeline_running"] = False
+
+
+def _tab_pipeline():
+    import threading
+    from pipeline import step1_query  # noqa: imported for type reference only
 
     st.header("Pipeline — Knowledge Base Builder")
     st.markdown(
@@ -786,6 +865,13 @@ def _tab_pipeline():
             type="primary",
         )
 
+    # Initialise session state keys on first load
+    for _k, _v in [
+        ("pipeline_running", False), ("pipeline_pct", 0),
+        ("pipeline_msg", ""), ("pipeline_log", []), ("pipeline_error", None),
+    ]:
+        st.session_state.setdefault(_k, _v)
+
     if run_clicked:
         if not selected_tas:
             st.error("Please select at least one Therapeutic Area.")
@@ -793,8 +879,9 @@ def _tab_pipeline():
             st.error("Please select at least one Study Phase.")
         elif not selected_statuses:
             st.error("Please select at least one Study Status.")
+        elif st.session_state["pipeline_running"]:
+            st.warning("Pipeline is already running — wait for it to finish.")
         else:
-            # Build config override
             config_override = copy.deepcopy(CONFIG)
             query_terms = [_TA_QUERY_MAP[ta] for ta in selected_tas if ta in _TA_QUERY_MAP]
             config_override["filters"]["therapeutic_areas"] = query_terms
@@ -804,99 +891,49 @@ def _tab_pipeline():
             config_override["sampling"]["max_total"] = int(max_total)
             config_override["storage"]["overwrite_existing"] = overwrite
 
-            try:
-                total_steps = 5 if api_key else 3
-                progress = st.progress(0, text="Starting pipeline…")
+            t = threading.Thread(
+                target=_run_pipeline_thread,
+                args=(config_override, api_key),
+                daemon=True,
+            )
+            t.start()
+            st.rerun()
 
-                with st.status("Running pipeline…", expanded=True) as status:
-                    # Step 1
-                    progress.progress(0, text="Step 1/5 — Querying ClinicalTrials.gov…")
-                    st.write("Querying ClinicalTrials.gov…")
-                    query_results = step1_query.run(config_override)
-                    st.write(f"Found {len(query_results)} studies with SAP documents.")
-                    progress.progress(20, text=f"Step 1/5 complete — {len(query_results)} studies found.")
+    # ── Live status display (shown whenever pipeline has run or is running) ──
+    if st.session_state["pipeline_running"] or st.session_state["pipeline_pct"] > 0:
+        pct = st.session_state["pipeline_pct"]
+        msg = st.session_state["pipeline_msg"]
+        log = st.session_state["pipeline_log"]
+        err = st.session_state["pipeline_error"]
 
-                    if not query_results:
-                        progress.progress(100, text="Done — no studies found.")
-                        status.update(
-                            label="Pipeline complete — no studies found.",
-                            state="complete",
-                            expanded=True,
-                        )
-                        st.info("No studies matching the selected filters were found.")
-                    else:
-                        # Step 2
-                        progress.progress(20, text="Step 2/5 — Downloading SAP PDFs…")
-                        st.write("Downloading SAP PDFs…")
-                        download_results = step2_download.run(config_override, query_results)
-                        st.write(f"Downloaded {len(download_results)} PDFs.")
-                        progress.progress(40, text=f"Step 2/5 complete — {len(download_results)} PDFs downloaded.")
+        st.divider()
+        st.subheader("Pipeline Progress")
 
-                        # Step 3
-                        progress.progress(40, text="Step 3/5 — Extracting text from PDFs…")
-                        st.write("Extracting text from PDFs…")
-                        extraction_results = step3_extract.run(config_override, download_results)
-                        st.write(f"Extracted text from {len(extraction_results)} documents.")
-                        progress.progress(60, text=f"Step 3/5 complete — {len(extraction_results)} documents extracted.")
+        if st.session_state["pipeline_running"]:
+            st.progress(pct, text=msg)
+            st.caption("You can switch tabs — the pipeline continues in the background.")
+            # Auto-refresh every 2 s while running
+            import time as _time
+            _time.sleep(2)
+            st.rerun()
+        elif err:
+            st.progress(0, text="❌ Pipeline failed.")
+            st.error(f"```\n{err}\n```")
+        else:
+            st.progress(pct, text=msg)
 
-                        # Step 4 (Claude)
-                        if api_key:
-                            progress.progress(60, text="Step 4/5 — Parsing with Claude API…")
-                            st.write("Parsing with Claude API (Step 4)…")
-                            parse_results = step4_parse.run(config_override, extraction_results)
-                            st.write(f"Parsed {len(parse_results)} schemas.")
-                            progress.progress(75, text=f"Step 4/5 complete — {len(parse_results)} schemas parsed.")
+        if log:
+            with st.expander("Pipeline log", expanded=False):
+                for line in log:
+                    st.write(line)
 
-                            # Step 4b — LLM recommendation engine
-                            progress.progress(75, text="Step 4b/5 — Generating CDISC recommendations…")
-                            st.write("Generating CDISC recommendations (Step 4b)…")
-                            storage_cfg = config_override["storage"]
-                            base_path = Path(storage_cfg["base_path"])
-                            schema_dir = base_path / storage_cfg["subdirs"]["parsed_schemas"]
-                            enriched_results = []
-                            for idx, result in enumerate(parse_results):
-                                pct = 75 + int(15 * (idx + 1) / max(len(parse_results), 1))
-                                progress.progress(pct, text=f"Step 4b/5 — Recommending for study {idx+1}/{len(parse_results)}…")
-                                schema_obj = result.get("schema")
-                                if schema_obj:
-                                    enriched = rule_engine.run_rules(schema_obj, config_override)
-                                    schema_path = result.get("schema_path")
-                                    if schema_path:
-                                        try:
-                                            with open(schema_path, "w", encoding="utf-8") as fh:
-                                                _json.dump(enriched, fh, indent=2, ensure_ascii=False)
-                                        except Exception:
-                                            pass
-                                    enriched_results.append({**result, "schema": enriched})
-                                else:
-                                    enriched_results.append(result)
-                            st.write(f"CDISC recommendations generated for {len(enriched_results)} schemas.")
-                            progress.progress(90, text=f"Step 4b/5 complete — {len(enriched_results)} recommendations generated.")
-                        else:
-                            st.write("Skipping Steps 4 and 4b (ANTHROPIC_API_KEY not set).")
-                            enriched_results = []
-
-                        # Step 5
-                        progress.progress(90, text="Step 5/5 — Updating knowledge base index…")
-                        st.write("Updating knowledge base index…")
-                        step5_index.run(config_override, enriched_results)
-                        added = len(enriched_results)
-                        progress.progress(100, text=f"✅ Done — {added} SAPs added to knowledge base.")
-                        st.write(f"✅ Pipeline complete. {added} SAPs added to knowledge base.")
-
-                        status.update(
-                            label=f"Pipeline complete — {added} SAPs added.",
-                            state="complete",
-                            expanded=True,
-                        )
-
+        if not st.session_state["pipeline_running"] and pct == 100:
+            if st.button("Clear & run again"):
+                st.session_state["pipeline_pct"] = 0
+                st.session_state["pipeline_msg"] = ""
+                st.session_state["pipeline_log"] = []
+                st.session_state["pipeline_error"] = None
                 st.rerun()
-
-            except Exception as exc:
-                st.error(
-                    f"Pipeline failed with an error:\n\n"
-                    f"```\n{traceback.format_exc()}\n```"
-                )
 
 
 # ---------------------------------------------------------------------------
