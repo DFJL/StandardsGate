@@ -247,6 +247,11 @@ def lookup_from_index(nct_id: str, config: dict) -> dict:
             break
 
     if schema_path is None:
+        # Fallback: reconstruct a partial schema from master_index.csv
+        schema = _schema_from_index_row(nct_id, base_path, storage_cfg)
+        if schema is not None:
+            schema = rule_engine.run_rules(schema, config)
+            return schema
         searched = [str(c) for c in candidates]
         raise FileNotFoundError(
             f"No processed schema found for NCT ID '{nct_id}'. "
@@ -262,6 +267,95 @@ def lookup_from_index(nct_id: str, config: dict) -> dict:
 
     # Re-run rule engine to ensure SDTM/ADaM recommendations are current
     schema = rule_engine.run_rules(schema, config)
+    return schema
+
+
+def _schema_from_index_row(nct_id: str, base_path: Path, storage_cfg: dict) -> Optional[dict]:
+    """
+    Reconstruct a minimal canonical schema from a master_index.csv row.
+    Used as fallback when the full JSON schema file is not available locally.
+    """
+    import pandas as pd
+    index_path = base_path / storage_cfg["master_index_file"]
+    if not index_path.exists():
+        return None
+
+    try:
+        df = pd.read_csv(index_path, dtype=str).fillna("")
+        row = df[df["nct_id"] == nct_id]
+        if row.empty:
+            return None
+        r = row.iloc[0].to_dict()
+    except Exception:
+        return None
+
+    def _bool(v):
+        return str(v).lower() in ("true", "1", "yes")
+
+    primary_ep = {}
+    if r.get("primary_endpoint_type"):
+        primary_ep = {
+            "description": r.get("primary_endpoint_desc", ""),
+            "type": r.get("primary_endpoint_type", "OTHER"),
+            "timepoint": None,
+            "population": None,
+            "sap_section": None,
+        }
+
+    pops = []
+    for abbr in str(r.get("analysis_populations", "")).split("|"):
+        abbr = abbr.strip()
+        if abbr:
+            pops.append({"name": abbr, "abbreviation": abbr, "definition": None, "sap_section": None})
+
+    schema = {
+        "metadata": {
+            "nct_id": nct_id,
+            "study_title": r.get("study_title", ""),
+            "sponsor": r.get("sponsor", ""),
+            "therapeutic_area": r.get("therapeutic_area", ""),
+            "indication": r.get("indication", ""),
+            "phase": r.get("phase", ""),
+            "study_design": r.get("study_design", ""),
+            "source_document": r.get("source_pdf", ""),
+            "extraction_date": r.get("extraction_date", ""),
+        },
+        "endpoints": {
+            "primary": [primary_ep] if primary_ep else [],
+            "secondary": [],
+            "exploratory": [],
+        },
+        "analysis_populations": pops,
+        "special_assessments": {
+            "pharmacokinetics": _bool(r.get("has_pk")),
+            "tumor_response": _bool(r.get("has_tumor_response")),
+            "patient_reported_outcomes": _bool(r.get("has_pro")),
+            "biomarkers": False,
+            "imaging": _bool(r.get("has_imaging")),
+            "ecg": _bool(r.get("has_ecg")),
+            "ophthalmology": False,
+            "non_standard_endpoints": [],
+        },
+        "statistical_methods": {
+            "primary_analysis_method": None,
+            "covariates": None,
+            "visit_windowing": None,
+            "multiplicity_adjustment": _bool(r.get("multiplicity_adjustment")),
+            "missing_data_handling": None,
+            "estimand_framework": _bool(r.get("estimand_framework")),
+            "bayesian_elements": _bool(r.get("bayesian")),
+            "sap_section": None,
+        },
+        "open_questions": [],
+        "flags": [],
+        "sap_section_refs": {},
+        "sdtm_domains_expected": [],
+        "adam_datasets_expected": [],
+        "component_confidence": {},
+        "extraction_confidence": r.get("extraction_confidence", "LOW"),
+        "extraction_notes": "Schema reconstructed from master_index.csv — full JSON not available locally. Re-run pipeline to restore complete schema.",
+        "non_standard_approaches": [],
+    }
     return schema
 
 
