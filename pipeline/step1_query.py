@@ -22,15 +22,16 @@ def _build_query_params(config: dict, ta: str, page_token: Optional[str] = None)
     api_cfg = config["clinicaltrials_api"]
     filters = config["filters"]
 
-    # Phase filter — API expects comma-separated values in the filter expression
-    phase_filter = "|".join(filters["phases"])  # e.g. PHASE2|PHASE3
+    # Phase filter — API v2 expects comma-separated values
+    phase_filter = ",".join(filters["phases"]) if filters.get("phases") else None
 
-    # Status filter
-    status_filter = "|".join(filters["study_status"])
+    # Status filter — comma-separated
+    status_filter = ",".join(filters["study_status"]) if filters.get("study_status") else None
 
     params = {
         "query.cond": ta,
-        "filter.phase": phase_filter,
+        # Filter to studies that have a SAP posted
+        "filter.advanced": "AREA[LargeDocumentType]Statistical Analysis Plan",
         "filter.overallStatus": status_filter,
         # Request large docs info so we can detect SAP presence
         "fields": (
@@ -40,6 +41,9 @@ def _build_query_params(config: dict, ta: str, page_token: Optional[str] = None)
         "pageSize": api_cfg["page_size"],
         "format": "json",
     }
+
+    if phase_filter:
+        params["filter.phase"] = phase_filter
 
     if page_token:
         params["pageToken"] = page_token
