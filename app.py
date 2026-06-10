@@ -781,9 +781,8 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
         _PIPELINE_STATE["running"] = False
 
 
-@st.fragment(run_every=3)
-def _pipeline_status_fragment():
-    """Auto-refreshing fragment that shows pipeline progress. Must be module-level for stable identity."""
+def _render_pipeline_status():
+    """Render current pipeline status. Called on every page render — no fragment magic needed."""
     import time as _time
     running = _PIPELINE_STATE["running"]
     pct = _PIPELINE_STATE["pct"]
@@ -791,7 +790,7 @@ def _pipeline_status_fragment():
     if not (running or pct > 0 or msg):
         return
 
-    log = list(_PIPELINE_STATE["log"])  # snapshot
+    log = list(_PIPELINE_STATE["log"])
     err = _PIPELINE_STATE["error"]
     start = _PIPELINE_STATE.get("start_time") or _time.time()
     elapsed = _time.time() - start
@@ -801,11 +800,11 @@ def _pipeline_status_fragment():
     st.subheader("⚙️ Pipeline Status")
 
     if running:
-        bar_val = max(pct / 100, 0.01)  # show at least a sliver so bar is visible
+        bar_val = max(pct / 100, 0.01)
         st.progress(bar_val, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
-        st.caption("Pipeline is running in the background — you can switch tabs freely.")
+        st.caption("🔄 Auto-refreshing every 2 seconds while running…")
     elif err:
-        st.progress(0.0, text="❌ Pipeline failed.")
+        st.error("❌ Pipeline failed.")
         with st.expander("Error details", expanded=True):
             st.code(err)
     else:
@@ -928,7 +927,7 @@ def _tab_pipeline():
     # ------------------------------------------------------------------
     # Section 2: Live Pipeline Status (always shown if running or done)
     # ------------------------------------------------------------------
-    _pipeline_status_fragment()
+    _render_pipeline_status()
 
     st.divider()
 
@@ -1080,6 +1079,13 @@ def main():
 
     with tabs[5]:
         _tab_export(schema)
+
+    # Auto-refresh while pipeline is active (sleep blocks this render thread briefly,
+    # then rerun picks up latest _PIPELINE_STATE written by the background thread)
+    if _PIPELINE_STATE["running"]:
+        import time as _time
+        _time.sleep(2)
+        st.rerun()
 
 
 if __name__ == "__main__":
