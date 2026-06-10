@@ -28,14 +28,16 @@ def _build_query_params(config: dict, ta: str, page_token: Optional[str] = None)
     # Status filter — comma-separated
     status_filter = ",".join(filters["study_status"]) if filters.get("study_status") else None
 
+    # Use query.term for SAP filter alongside query.cond (filter.advanced conflicts with query.*)
     params = {
         "query.cond": ta,
-        # Filter to studies that have a SAP posted
-        "filter.advanced": "AREA[LargeDocumentType]Statistical Analysis Plan",
-        "filter.overallStatus": status_filter,
+        "query.term": "Statistical Analysis Plan",
         "pageSize": api_cfg["page_size"],
         "format": "json",
     }
+
+    if status_filter:
+        params["filter.overallStatus"] = status_filter
 
     if phase_filter:
         params["filter.phase"] = phase_filter
