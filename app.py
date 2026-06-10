@@ -787,8 +787,9 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
         _PIPELINE_STATE["running"] = False
 
 
+@st.fragment(run_every=3)
 def _render_pipeline_status():
-    """Render current pipeline status. Called on every page render — no fragment magic needed."""
+    """Pipeline status — fragment auto-refreshes every 3s while running."""
     import time as _time
     running = _PIPELINE_STATE["running"]
     pct = _PIPELINE_STATE["pct"]
