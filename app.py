@@ -206,23 +206,23 @@ def _tab_input():
         nct_id_input = st.text_input(
             "NCT Identifier",
             placeholder="e.g. NCT01234567",
-            help="The study must have been processed by the pipeline (run_pipeline.py) first.",
+            help="The study must have been processed by the pipeline first.",
         )
-        if st.button("Load from Knowledge Base", disabled=not nct_id_input.strip()):
-            nct_id = nct_id_input.strip().upper()
-            with st.spinner(f"Loading schema for {nct_id}…"):
-                try:
-                    schema = lookup_from_index(nct_id, CONFIG)
-                    st.session_state["schema"] = schema
-                    st.session_state["source"] = nct_id
-                    st.success(
-                        f"Schema loaded for {nct_id}. Switch to the tabs above to review.",
-                        icon="✅",
-                    )
-                except FileNotFoundError as exc:
-                    st.warning(str(exc))
-                except Exception as exc:
-                    st.error(f"Failed to load schema: {exc}")
+        if st.button("Load from Knowledge Base", type="primary", disabled=False):
+            if not nct_id_input.strip():
+                st.warning("Enter an NCT ID first.")
+            else:
+                nct_id = nct_id_input.strip().upper()
+                with st.spinner(f"Loading schema for {nct_id}…"):
+                    try:
+                        schema = lookup_from_index(nct_id, CONFIG)
+                        st.session_state["schema"] = schema
+                        st.session_state["source"] = nct_id
+                        st.success(f"Schema loaded for {nct_id}. Switch to the tabs above to review.", icon="✅")
+                    except FileNotFoundError as exc:
+                        st.warning(str(exc))
+                    except Exception as exc:
+                        st.error(f"Failed to load schema: {exc}")
 
     # If a schema is loaded, show a quick status bar
     if "schema" in st.session_state:
@@ -803,28 +803,68 @@ def _tab_pipeline():
     kb_c3.metric("Last Run Date", last_run)
 
     if total_saps > 0:
+        # ── Filters ──────────────────────────────────────────────────────────
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            ta_options = sorted(index_df["therapeutic_area"].dropna().unique().tolist()) if "therapeutic_area" in index_df.columns else []
+            ta_filter = st.multiselect("Filter by Therapeutic Area", options=ta_options, default=[])
+        with f2:
+            phase_options = sorted(index_df["phase"].dropna().unique().tolist()) if "phase" in index_df.columns else []
+            phase_filter = st.multiselect("Filter by Phase", options=phase_options, default=[])
+        with f3:
+            conf_options = ["HIGH", "MEDIUM", "LOW"]
+            conf_filter = st.multiselect("Filter by Confidence", options=conf_options, default=[])
+
+        filtered_df = index_df.copy()
+        if ta_filter:
+            filtered_df = filtered_df[filtered_df["therapeutic_area"].isin(ta_filter)]
+        if phase_filter:
+            filtered_df = filtered_df[filtered_df["phase"].isin(phase_filter)]
+        if conf_filter:
+            filtered_df = filtered_df[filtered_df["extraction_confidence"].isin(conf_filter)]
+
         display_cols = [c for c in ["nct_id", "study_title", "therapeutic_area", "phase",
-                                     "extraction_confidence", "extraction_date"]
-                        if c in index_df.columns]
+                                     "primary_endpoint_type", "extraction_confidence", "extraction_date"]
+                        if c in filtered_df.columns]
+        display_df = filtered_df[display_cols].copy() if display_cols else filtered_df.copy()
+
+        # Make NCT IDs clickable links to ClinicalTrials.gov
+        if "nct_id" in display_df.columns:
+            display_df["nct_id"] = display_df["nct_id"].apply(
+                lambda x: f"https://clinicaltrials.gov/study/{x}" if pd.notna(x) else x
+            )
+
+        st.caption(f"Showing {len(filtered_df)} of {total_saps} SAPs")
         st.dataframe(
-            index_df[display_cols] if display_cols else index_df,
+            display_df,
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "nct_id": st.column_config.LinkColumn("NCT ID", display_text=r"NCT\d+"),
+                "study_title": st.column_config.TextColumn("Study Title", width="large"),
+                "therapeutic_area": st.column_config.TextColumn("Therapeutic Area"),
+                "phase": st.column_config.TextColumn("Phase", width="small"),
+                "primary_endpoint_type": st.column_config.TextColumn("Primary Endpoint", width="small"),
+                "extraction_confidence": st.column_config.TextColumn("Confidence", width="small"),
+                "extraction_date": st.column_config.TextColumn("Date", width="small"),
+            },
         )
 
-        storage_cfg = CONFIG["storage"]
-        base_path = Path(storage_cfg["base_path"])
-        index_path = base_path / storage_cfg["master_index_file"]
-        try:
-            csv_bytes = index_path.read_bytes()
-            st.download_button(
-                label="Download master_index.csv",
-                data=csv_bytes,
-                file_name="master_index.csv",
-                mime="text/csv",
-            )
-        except FileNotFoundError:
-            pass
+        dl_col, _ = st.columns([1, 4])
+        with dl_col:
+            storage_cfg = CONFIG["storage"]
+            base_path = Path(storage_cfg["base_path"])
+            index_path = base_path / storage_cfg["master_index_file"]
+            try:
+                csv_bytes = index_path.read_bytes()
+                st.download_button(
+                    label="⬇ Download master_index.csv",
+                    data=csv_bytes,
+                    file_name="master_index.csv",
+                    mime="text/csv",
+                )
+            except FileNotFoundError:
+                pass
     else:
         st.info("No SAPs in the knowledge base yet. Run the pipeline below to populate it.")
 
