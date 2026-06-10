@@ -22,14 +22,10 @@ def _build_query_params(config: dict, ta: str, page_token: Optional[str] = None)
     api_cfg = config["clinicaltrials_api"]
     filters = config["filters"]
 
-    # Phase filter — API v2 uses aggFilters with short codes: p1,p2,p3,p4
-    _phase_map = {"PHASE1": "p1", "PHASE2": "p2", "PHASE3": "p3", "PHASE4": "p4"}
-    phase_codes = [_phase_map[p] for p in filters.get("phases", []) if p in _phase_map]
-    phase_filter = "phase:" + ",".join(phase_codes) if phase_codes else None
-
-    # Status filter — filter.overallStatus uses full names comma-separated
+    # Status filter — filter.overallStatus accepts comma-separated values
     status_filter = ",".join(filters["study_status"]) if filters.get("study_status") else None
 
+    # Keep query minimal — phase is filtered client-side after fetching
     params = {
         "query.cond": ta,
         "query.term": "Statistical Analysis Plan",
@@ -39,10 +35,6 @@ def _build_query_params(config: dict, ta: str, page_token: Optional[str] = None)
 
     if status_filter:
         params["filter.overallStatus"] = status_filter
-
-    # aggFilters bundles phase (and other aggregate filters) in one param
-    if phase_filter:
-        params["aggFilters"] = phase_filter
 
     if page_token:
         params["pageToken"] = page_token
@@ -161,10 +153,20 @@ def query_studies_for_ta(config: dict, ta: str) -> list[dict]:
         studies = data.get("studies", [])
         logger.debug(f"  Got {len(studies)} studies on page {page_num}")
 
+        allowed_phases = set(filters.get("phases", []))
         for study in studies:
             if _has_sap_document(study, doc_type_kw):
                 record = _extract_study_record(study, ta)
                 if record:
+                    # Filter phase client-side
+                    if allowed_phases:
+                        study_phases = set(
+                            study.get("protocolSection", {})
+                            .get("designModule", {})
+                            .get("phases", [])
+                        )
+                        if not study_phases.intersection(allowed_phases):
+                            continue
                     studies_with_sap.append(record)
 
         # Pagination: API v2 returns nextPageToken when more pages exist
