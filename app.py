@@ -331,7 +331,7 @@ def _tab_sap_summary(schema: dict):
             })
         st.dataframe(
             pd.DataFrame(rows),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -346,7 +346,7 @@ def _tab_sap_summary(schema: dict):
                 "Abbreviation": p.get("abbreviation") or "—",
                 "Definition": p.get("definition") or "—",
             })
-        st.dataframe(pd.DataFrame(pop_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(pop_rows), width="stretch", hide_index=True)
     else:
         st.info("No analysis populations detected. Review SAP manually.")
 
@@ -385,7 +385,7 @@ def _tab_sap_summary(schema: dict):
     if nse:
         assess_rows.append({"Assessment": "Non-standard Endpoints", "Detected": ", ".join(nse)})
 
-    st.dataframe(pd.DataFrame(assess_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(assess_rows), width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +423,7 @@ def _tab_sdtm(schema: dict):
 
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "Domain": st.column_config.TextColumn("Domain", width="small"),
@@ -837,7 +837,7 @@ def _tab_pipeline():
         st.caption(f"Showing {len(filtered_df)} of {total_saps} SAPs")
         st.dataframe(
             display_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "nct_id": st.column_config.LinkColumn("NCT ID", display_text=r"NCT\d+"),
@@ -919,7 +919,7 @@ def _tab_pipeline():
 
         run_clicked = st.form_submit_button(
             "▶ Run Pipeline",
-            use_container_width=True,
+            width="stretch",
             type="primary",
         )
 
@@ -949,10 +949,17 @@ def _tab_pipeline():
             config_override["sampling"]["max_total"] = int(max_total)
             config_override["storage"]["overwrite_existing"] = overwrite
 
+            # Set running state BEFORE starting thread to avoid race condition
+            st.session_state["pipeline_running"] = True
+            st.session_state["pipeline_pct"] = 0
+            st.session_state["pipeline_msg"] = "Starting pipeline…"
+            st.session_state["pipeline_log"] = []
+            st.session_state["pipeline_error"] = None
+
             t = threading.Thread(
                 target=_run_pipeline_thread,
                 args=(config_override, api_key),
-                daemon=True,
+                daemon=False,
             )
             t.start()
             st.rerun()
