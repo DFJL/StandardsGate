@@ -680,16 +680,22 @@ def _load_master_index(config: dict) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Thread-safe pipeline state (plain dict — readable from any thread)
+# Thread-safe pipeline state — cached so it survives Streamlit reruns
+# (Streamlit re-executes the script top-to-bottom on every interaction;
+#  @st.cache_resource ensures this dict is only created once per process)
 # ---------------------------------------------------------------------------
-_PIPELINE_STATE: dict = {
-    "running": False,
-    "pct": 0,
-    "msg": "",
-    "log": [],
-    "error": None,
-    "start_time": 0.0,
-}
+@st.cache_resource
+def _get_pipeline_state() -> dict:
+    return {
+        "running": False,
+        "pct": 0,
+        "msg": "",
+        "log": [],
+        "error": None,
+        "start_time": 0.0,
+    }
+
+_PIPELINE_STATE = _get_pipeline_state()
 
 
 def _run_pipeline_thread(config_override: dict, api_key: str):
