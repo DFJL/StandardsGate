@@ -49,6 +49,14 @@ def load_config() -> dict:
 CONFIG = load_config()
 
 # ---------------------------------------------------------------------------
+# Download knowledge base from Google Drive on cold start
+# ---------------------------------------------------------------------------
+from pipeline import gdrive_sync  # noqa: E402
+if gdrive_sync.is_configured():
+    _kb_path = Path(CONFIG["storage"]["base_path"])
+    gdrive_sync.download_knowledge_base(_kb_path)
+
+# ---------------------------------------------------------------------------
 # Helpers imported from app_utils
 # ---------------------------------------------------------------------------
 from app_utils import (
@@ -741,6 +749,16 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
             added = len(enriched_results)
             _set(100, f"✅ Done — {added} SAPs added to knowledge base.",
                  f"✅ Pipeline complete. {added} SAPs added to knowledge base.")
+
+            # Sync to Google Drive
+            if gdrive_sync.is_configured():
+                from pathlib import Path as _Path
+                _kb_path = _Path(config_override["storage"]["base_path"])
+                uploaded = gdrive_sync.upload_knowledge_base(_kb_path)
+                if uploaded:
+                    st.session_state["pipeline_log"].append("☁️ Knowledge base synced to Google Drive.")
+                else:
+                    st.session_state["pipeline_log"].append("⚠️ Google Drive sync failed — data saved locally only.")
 
     except Exception:
         st.session_state["pipeline_error"] = traceback.format_exc()

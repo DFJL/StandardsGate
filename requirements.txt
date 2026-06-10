@@ -8,3 +8,5 @@ tqdm
 tenacity
 loguru
 streamlit>=1.35.0
+google-auth
+google-api-python-client
