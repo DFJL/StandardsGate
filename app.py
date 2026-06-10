@@ -805,13 +805,19 @@ def _tab_pipeline():
             config_override["storage"]["overwrite_existing"] = overwrite
 
             try:
+                total_steps = 5 if api_key else 3
+                progress = st.progress(0, text="Starting pipeline…")
+
                 with st.status("Running pipeline…", expanded=True) as status:
                     # Step 1
+                    progress.progress(0, text="Step 1/5 — Querying ClinicalTrials.gov…")
                     st.write("Querying ClinicalTrials.gov…")
                     query_results = step1_query.run(config_override)
                     st.write(f"Found {len(query_results)} studies with SAP documents.")
+                    progress.progress(20, text=f"Step 1/5 complete — {len(query_results)} studies found.")
 
                     if not query_results:
+                        progress.progress(100, text="Done — no studies found.")
                         status.update(
                             label="Pipeline complete — no studies found.",
                             state="complete",
@@ -820,32 +826,40 @@ def _tab_pipeline():
                         st.info("No studies matching the selected filters were found.")
                     else:
                         # Step 2
+                        progress.progress(20, text="Step 2/5 — Downloading SAP PDFs…")
                         st.write("Downloading SAP PDFs…")
                         download_results = step2_download.run(config_override, query_results)
                         st.write(f"Downloaded {len(download_results)} PDFs.")
+                        progress.progress(40, text=f"Step 2/5 complete — {len(download_results)} PDFs downloaded.")
 
                         # Step 3
+                        progress.progress(40, text="Step 3/5 — Extracting text from PDFs…")
                         st.write("Extracting text from PDFs…")
                         extraction_results = step3_extract.run(config_override, download_results)
                         st.write(f"Extracted text from {len(extraction_results)} documents.")
+                        progress.progress(60, text=f"Step 3/5 complete — {len(extraction_results)} documents extracted.")
 
                         # Step 4 (Claude)
                         if api_key:
+                            progress.progress(60, text="Step 4/5 — Parsing with Claude API…")
                             st.write("Parsing with Claude API (Step 4)…")
                             parse_results = step4_parse.run(config_override, extraction_results)
                             st.write(f"Parsed {len(parse_results)} schemas.")
+                            progress.progress(75, text=f"Step 4/5 complete — {len(parse_results)} schemas parsed.")
 
-                            # Step 4b — rule engine
+                            # Step 4b — LLM recommendation engine
+                            progress.progress(75, text="Step 4b/5 — Generating CDISC recommendations…")
                             st.write("Generating CDISC recommendations (Step 4b)…")
                             storage_cfg = config_override["storage"]
                             base_path = Path(storage_cfg["base_path"])
                             schema_dir = base_path / storage_cfg["subdirs"]["parsed_schemas"]
                             enriched_results = []
-                            for result in parse_results:
+                            for idx, result in enumerate(parse_results):
+                                pct = 75 + int(15 * (idx + 1) / max(len(parse_results), 1))
+                                progress.progress(pct, text=f"Step 4b/5 — Recommending for study {idx+1}/{len(parse_results)}…")
                                 schema_obj = result.get("schema")
                                 if schema_obj:
                                     enriched = rule_engine.run_rules(schema_obj, config_override)
-                                    # Write updated schema back to disk
                                     schema_path = result.get("schema_path")
                                     if schema_path:
                                         try:
@@ -856,15 +870,18 @@ def _tab_pipeline():
                                     enriched_results.append({**result, "schema": enriched})
                                 else:
                                     enriched_results.append(result)
-                            st.write(f"Rule engine applied to {len(enriched_results)} schemas.")
+                            st.write(f"CDISC recommendations generated for {len(enriched_results)} schemas.")
+                            progress.progress(90, text=f"Step 4b/5 complete — {len(enriched_results)} recommendations generated.")
                         else:
                             st.write("Skipping Steps 4 and 4b (ANTHROPIC_API_KEY not set).")
                             enriched_results = []
 
                         # Step 5
+                        progress.progress(90, text="Step 5/5 — Updating knowledge base index…")
                         st.write("Updating knowledge base index…")
                         step5_index.run(config_override, enriched_results)
                         added = len(enriched_results)
+                        progress.progress(100, text=f"✅ Done — {added} SAPs added to knowledge base.")
                         st.write(f"✅ Pipeline complete. {added} SAPs added to knowledge base.")
 
                         status.update(
