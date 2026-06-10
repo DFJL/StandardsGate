@@ -787,36 +787,37 @@ def _pipeline_status_fragment():
     import time as _time
     running = _PIPELINE_STATE["running"]
     pct = _PIPELINE_STATE["pct"]
-    if not (running or pct > 0):
+    msg = _PIPELINE_STATE["msg"]
+    if not (running or pct > 0 or msg):
         return
 
-    msg = _PIPELINE_STATE["msg"]
     log = list(_PIPELINE_STATE["log"])  # snapshot
     err = _PIPELINE_STATE["error"]
-    start = _PIPELINE_STATE.get("start_time", _time.time())
+    start = _PIPELINE_STATE.get("start_time") or _time.time()
     elapsed = _time.time() - start
     mins, secs = divmod(int(elapsed), 60)
     timer_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
 
-    st.divider()
-    st.subheader("Pipeline Progress")
+    st.subheader("⚙️ Pipeline Status")
 
     if running:
-        st.progress(pct / 100, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
-        st.caption("You can switch tabs — the pipeline continues in the background.")
+        bar_val = max(pct / 100, 0.01)  # show at least a sliver so bar is visible
+        st.progress(bar_val, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
+        st.caption("Pipeline is running in the background — you can switch tabs freely.")
     elif err:
         st.progress(0.0, text="❌ Pipeline failed.")
-        st.error(f"```\n{err}\n```")
+        with st.expander("Error details", expanded=True):
+            st.code(err)
     else:
-        st.progress(pct / 100, text=f"{msg}  ·  ⏱ Total: {timer_str}")
+        st.progress(pct / 100, text=f"✅ {msg}  ·  ⏱ Total: {timer_str}")
 
     if log:
-        with st.expander("Pipeline log", expanded=True):
+        with st.expander("Pipeline log", expanded=running):
             for line in reversed(log):
                 st.write(line)
 
-    if not running and pct == 100:
-        if st.button("Clear & run again", key="clear_pipeline"):
+    if not running and (pct == 100 or err):
+        if st.button("Clear status", key="clear_pipeline"):
             _PIPELINE_STATE.update({"running": False, "pct": 0, "msg": "", "log": [], "error": None})
             st.rerun()
 
@@ -925,7 +926,14 @@ def _tab_pipeline():
     st.divider()
 
     # ------------------------------------------------------------------
-    # Section 2: Run Pipeline
+    # Section 2: Live Pipeline Status (always shown if running or done)
+    # ------------------------------------------------------------------
+    _pipeline_status_fragment()
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # Section 3: Run Pipeline
     # ------------------------------------------------------------------
     st.subheader("Run Pipeline")
 
@@ -1013,10 +1021,8 @@ def _tab_pipeline():
                 daemon=False,
             )
             t.start()
+            st.toast("Pipeline started! Progress updates every few seconds.", icon="🚀")
             st.rerun()
-
-    # ── Live status display — uses module-level fragment for stable auto-refresh ──
-    _pipeline_status_fragment()
 
 
 # ---------------------------------------------------------------------------
