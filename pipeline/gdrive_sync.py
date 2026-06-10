@@ -109,12 +109,10 @@ def _upload_file(
     filename: str,
     parent_id: str,
     mime_type: str = "application/octet-stream",
-) -> bool:
+) -> tuple[bool, str]:
     """
     Upload *local_path* to Drive under *parent_id* as *filename*.
-
-    Overwrites an existing file with the same name; creates a new one otherwise.
-    Returns True on success.
+    Returns (True, "") on success, (False, error_message) on failure.
     """
     from googleapiclient.http import MediaIoBaseUpload  # noqa: PLC0415
 
@@ -136,10 +134,11 @@ def _upload_file(
             ).execute()
             logger.debug(f"[gdrive_sync] Created '{filename}' in folder {parent_id}")
 
-        return True
+        return True, ""
     except Exception as exc:
-        logger.error(f"[gdrive_sync] Failed to upload '{filename}': {exc}")
-        return False
+        msg = f"Failed to upload '{filename}': {exc}"
+        logger.error(f"[gdrive_sync] {msg}")
+        return False, msg
 
 
 def _download_file(drive_service, file_id: str, dest_path: Path) -> bool:
@@ -199,24 +198,17 @@ def upload_knowledge_base(base_path: Path) -> bool:
         logger.error("[gdrive_sync] upload_knowledge_base: could not build Drive service — check GOOGLE_SERVICE_ACCOUNT_JSON secret.")
         return False
 
-    success = True
+    errors: list[str] = []
 
     # --- master_index.csv ---
     index_path = base_path / "master_index.csv"
     if index_path.exists():
         logger.info("[gdrive_sync] Uploading master_index.csv…")
-        ok = _upload_file(
-            drive_service,
-            index_path,
-            "master_index.csv",
-            FOLDER_ID,
-            mime_type="text/csv",
-        )
+        ok, err = _upload_file(drive_service, index_path, "master_index.csv", FOLDER_ID, mime_type="text/csv")
         if ok:
             logger.info("[gdrive_sync] master_index.csv uploaded successfully.")
         else:
-            logger.error("[gdrive_sync] Failed to upload master_index.csv.")
-            success = False
+            errors.append(f"master_index.csv: {err}")
     else:
         logger.warning(f"[gdrive_sync] master_index.csv not found at {index_path} — skipping.")
 
@@ -227,25 +219,20 @@ def upload_knowledge_base(base_path: Path) -> bool:
         if json_files:
             logger.info(f"[gdrive_sync] Uploading {len(json_files)} JSON schema(s)…")
             for json_path in json_files:
-                ok = _upload_file(
-                    drive_service,
-                    json_path,
-                    json_path.name,
-                    SCHEMAS_FOLDER_ID,
-                    mime_type="application/json",
-                )
-                if ok:
-                    logger.debug(f"[gdrive_sync] Uploaded {json_path.name}")
-                else:
-                    logger.error(f"[gdrive_sync] Failed to upload {json_path.name}")
-                    success = False
-            logger.info("[gdrive_sync] Schema upload complete.")
+                ok, err = _upload_file(drive_service, json_path, json_path.name, SCHEMAS_FOLDER_ID, mime_type="application/json")
+                if not ok:
+                    errors.append(f"{json_path.name}: {err}")
+            if not errors:
+                logger.info("[gdrive_sync] Schema upload complete.")
         else:
             logger.info("[gdrive_sync] No JSON schemas found in parsed_schemas/ — nothing to upload.")
     else:
-        logger.warning(f"[gdrive_sync] parsed_schemas/ directory not found at {schemas_dir} — skipping.")
+        logger.warning(f"[gdrive_sync] parsed_schemas/ not found at {schemas_dir} — skipping.")
 
-    return success
+    if errors:
+        raise RuntimeError("Drive upload errors:\n" + "\n".join(errors))
+
+    return True
 
 
 def download_knowledge_base(base_path: Path) -> bool:
