@@ -693,6 +693,7 @@ def _get_pipeline_state() -> dict:
         "log": [],
         "error": None,
         "start_time": 0.0,
+        "results": [],
     }
 
 _PIPELINE_STATE = _get_pipeline_state()
@@ -766,8 +767,24 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
             _set(90, "Step 5/5 — Updating knowledge base index…", "Updating knowledge base index…")
             step5_index.run(config_override, enriched_results)
             added = len(enriched_results)
-            _set(100, f"✅ Done — {added} SAPs added to knowledge base.",
+            _set(100, f"Done — {added} SAPs added to knowledge base.",
                  f"✅ Pipeline complete. {added} SAPs added to knowledge base.")
+
+            # Store result rows for display in status section
+            result_rows = []
+            for r in enriched_results:
+                schema = r.get("schema") or {}
+                result_rows.append({
+                    "NCT ID": r.get("nct_id", ""),
+                    "Title": r.get("study_title", schema.get("study_title", ""))[:80],
+                    "TA": r.get("therapeutic_area", ""),
+                    "Phase": r.get("phase", ""),
+                    "Primary Endpoint": schema.get("primary_endpoint_type", ""),
+                    "SDTM Domains": ", ".join(schema.get("sdtm_domains_expected", [])),
+                    "ADaM Datasets": ", ".join(schema.get("adam_datasets_expected", [])),
+                    "Confidence": schema.get("extraction_confidence", ""),
+                })
+            _PIPELINE_STATE["results"] = result_rows
 
             # Sync to Google Drive
             if gdrive_sync.is_configured():
@@ -809,13 +826,34 @@ def _render_pipeline_status():
     if running:
         bar_val = max(pct / 100, 0.01)
         st.progress(bar_val, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
-        st.caption("🔄 Auto-refreshing every 2 seconds while running…")
+        st.caption("🔄 Refreshing every 3 seconds…")
     elif err:
         st.error("❌ Pipeline failed.")
         with st.expander("Error details", expanded=True):
             st.code(err)
     else:
         st.progress(pct / 100, text=f"✅ {msg}  ·  ⏱ Total: {timer_str}")
+
+        # Results table
+        results = _PIPELINE_STATE.get("results", [])
+        if results:
+            st.markdown("**SAPs processed this run:**")
+            results_df = pd.DataFrame(results)
+            st.dataframe(
+                results_df,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "NCT ID": st.column_config.TextColumn("NCT ID", width="small"),
+                    "Title": st.column_config.TextColumn("Title", width="large"),
+                    "TA": st.column_config.TextColumn("TA", width="small"),
+                    "Phase": st.column_config.TextColumn("Phase", width="small"),
+                    "Primary Endpoint": st.column_config.TextColumn("Primary Endpoint", width="small"),
+                    "SDTM Domains": st.column_config.TextColumn("SDTM Domains"),
+                    "ADaM Datasets": st.column_config.TextColumn("ADaM Datasets"),
+                    "Confidence": st.column_config.TextColumn("Confidence", width="small"),
+                },
+            )
 
     if log:
         with st.expander("Pipeline log", expanded=running):
@@ -824,7 +862,7 @@ def _render_pipeline_status():
 
     if not running and (pct == 100 or err):
         if st.button("Clear status", key="clear_pipeline"):
-            _PIPELINE_STATE.update({"running": False, "pct": 0, "msg": "", "log": [], "error": None})
+            _PIPELINE_STATE.update({"running": False, "pct": 0, "msg": "", "log": [], "error": None, "results": []})
             st.rerun()
 
 
