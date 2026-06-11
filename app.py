@@ -233,8 +233,8 @@ def _tab_input():
                     st.success(f"Schema loaded for {nct_id}. Switch to the tabs above to review.", icon="✅")
                 except FileNotFoundError as exc:
                     st.warning(str(exc))
-                    except Exception as exc:
-                        st.error(f"Failed to load schema: {exc}")
+                except Exception as exc:
+                    st.error(f"Failed to load schema: {exc}")
 
     # If a schema is loaded, show a quick status bar
     if "schema" in st.session_state:
