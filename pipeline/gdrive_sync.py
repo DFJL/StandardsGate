@@ -257,6 +257,36 @@ def upload_knowledge_base(base_path: Path) -> bool:
     else:
         logger.warning(f"[gdrive_sync] parsed_schemas/ not found at {schemas_dir} — skipping.")
 
+    # --- texts bundle (all extracted .txt files merged into one JSON) ---
+    texts_bundle_id = cfg.get("texts_bundle_file_id")
+    if texts_bundle_id:
+        text_dir = base_path / "extracted_text"
+        if text_dir.is_dir():
+            txt_files = list(text_dir.glob("*.txt"))
+            if txt_files:
+                texts = {}
+                for tp in txt_files:
+                    try:
+                        texts[tp.stem] = tp.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+                logger.info(f"[gdrive_sync] Uploading texts bundle ({len(texts)} files)…")
+                ok, err = _update_file_by_id(
+                    drive_service, texts_bundle_id,
+                    json.dumps(texts, ensure_ascii=False).encode("utf-8"),
+                    "application/json",
+                )
+                if ok:
+                    logger.info("[gdrive_sync] texts_bundle.json updated.")
+                else:
+                    errors.append(f"texts_bundle.json: {err}")
+            else:
+                logger.info("[gdrive_sync] No text files found — skipping texts bundle upload.")
+        else:
+            logger.info("[gdrive_sync] extracted_text/ not found — skipping texts bundle upload.")
+    else:
+        logger.warning("[gdrive_sync] texts_bundle_file_id not configured — skipping text sync.")
+
     if errors:
         raise RuntimeError("Drive upload errors:\n" + "\n".join(errors))
 
@@ -314,5 +344,27 @@ def download_knowledge_base(base_path: Path) -> bool:
             logger.error(f"[gdrive_sync] Failed to unpack schemas bundle: {exc}")
     else:
         logger.info("[gdrive_sync] schemas_bundle.json not found or empty — skipping.")
+
+    # --- texts bundle → unpack into extracted_text/ ---
+    texts_bundle_id = cfg.get("texts_bundle_file_id")
+    if texts_bundle_id:
+        text_dest = base_path / "extracted_text"
+        text_dest.mkdir(parents=True, exist_ok=True)
+        texts_tmp = base_path / "_texts_bundle_tmp.json"
+        ok = _download_file(drive_service, texts_bundle_id, texts_tmp)
+        if ok:
+            try:
+                texts = json.loads(texts_tmp.read_text(encoding="utf-8"))
+                for nct_id, content in texts.items():
+                    dest = text_dest / f"{nct_id}.txt"
+                    dest.write_text(content, encoding="utf-8")
+                texts_tmp.unlink(missing_ok=True)
+                logger.info(f"[gdrive_sync] Unpacked {len(texts)} text file(s) from bundle.")
+                if texts:
+                    any_downloaded = True
+            except Exception as exc:
+                logger.error(f"[gdrive_sync] Failed to unpack texts bundle: {exc}")
+        else:
+            logger.info("[gdrive_sync] texts_bundle.json not found or empty — skipping.")
 
     return any_downloaded

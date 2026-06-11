@@ -34,6 +34,7 @@ google_drive:
   schemas_folder_id: "1Xnk1Hg23aajIITvKt92KmdpPfVxlcjy-"
   master_index_file_id: "1THh11pwyrtbvaqxUeXqDWaYl-NzhX16f"
   schemas_bundle_file_id: "1akob2bzGojzgYPv8ZF7Rq8wwuplDCOzf"
+  texts_bundle_file_id: "1bQLT8gMdr4BpQ6G6RwYN6XQ5MYSLUpS5"
 
 claude_api:
   model: "claude-sonnet-4-20250514"
