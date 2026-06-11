@@ -1738,6 +1738,71 @@ def _tab_pipeline():
             st.rerun()
 
     st.divider()
+
+    # ── Backfill SAP excerpts (no API calls) ─────────────────────────────
+    st.subheader("Backfill SAP Excerpts")
+    st.markdown(
+        "Populate `sap_section` and `sap_excerpt` fields on existing KB schemas "
+        "using local text matching — **no API calls required**. "
+        "Affects studies that have a text file in `extracted_text/`."
+    )
+    if st.button("Run Backfill (local, free)", key="backfill_btn"):
+        storage_cfg = CONFIG["storage"]
+        schemas_dir = Path(storage_cfg["base_path"]) / "parsed_schemas"
+        text_dir = Path(storage_cfg["base_path"]) / storage_cfg.get("extracted_text", "extracted_text")
+        schema_files = sorted(schemas_dir.glob("*.json")) if schemas_dir.exists() else []
+        if not schema_files:
+            st.warning("No schemas found in knowledge base.")
+        else:
+            results = []
+            for sf in schema_files:
+                nct_id = sf.stem
+                text_file = text_dir / f"{nct_id}.txt"
+                if not text_file.exists():
+                    results.append(f"⏭ {nct_id} — no text file")
+                    continue
+                try:
+                    with open(sf, encoding="utf-8") as fh:
+                        schema = json.load(fh)
+                    sap_text = text_file.read_text(encoding="utf-8")
+                    open_qs = schema.get("open_questions") or []
+                    updated = 0
+                    for q in open_qs:
+                        if q.get("sap_excerpt") and q.get("sap_section"):
+                            continue
+                        question = q.get("question") or q.get("category") or ""
+                        passage = _find_sap_passage(sap_text, question)
+                        if passage:
+                            if not q.get("sap_excerpt"):
+                                q["sap_excerpt"] = passage
+                            if not q.get("sap_section"):
+                                # Find nearest section header
+                                import re as _re
+                                sec_re = _re.compile(
+                                    r"(?:^|\n)\s*(\d+(?:\.\d+)*\.?\s+[A-Z][^\n]{3,60})",
+                                    _re.MULTILINE)
+                                words = [w for w in question.lower().split() if len(w) > 5]
+                                pos = sap_text.lower().find(words[0]) if words else 0
+                                best = ""
+                                for m in sec_re.finditer(sap_text):
+                                    if m.start() <= pos:
+                                        best = m.group(1).strip()
+                                if best:
+                                    q["sap_section"] = best
+                            updated += 1
+                    if updated:
+                        with open(sf, "w", encoding="utf-8") as fh:
+                            json.dump(schema, fh, ensure_ascii=False, indent=2)
+                        results.append(f"✅ {nct_id} — {updated} question(s) updated")
+                    else:
+                        results.append(f"⏭ {nct_id} — already complete or no matches")
+                except Exception as exc:
+                    results.append(f"❌ {nct_id} — {exc}")
+            st.success(f"Backfill complete: {len(schema_files)} schema(s) processed.")
+            for r in results:
+                st.markdown(f"- {r}")
+
+    st.divider()
     _render_pipeline_status()
 
 
