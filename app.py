@@ -288,6 +288,194 @@ immediate review before proceeding with study setup.</span>
 # ---------------------------------------------------------------------------
 # Tab: SAP Summary
 # ---------------------------------------------------------------------------
+# Tab: Knowledge Model
+# ---------------------------------------------------------------------------
+
+def _tab_knowledge_model(schema: dict):
+    import plotly.graph_objects as go
+    import math
+
+    st.header("Study Knowledge Model")
+    st.caption(
+        "Structured representation extracted from the SAP — "
+        "the durable knowledge asset that drives all downstream recommendations."
+    )
+
+    # ── Build node/edge lists ─────────────────────────────────────────────
+    nodes, edges, node_colors, node_sizes, node_text = [], [], [], [], []
+
+    def add_node(label, color, size, hover=""):
+        idx = len(nodes)
+        nodes.append(label)
+        node_colors.append(color)
+        node_sizes.append(size)
+        node_text.append(hover or label)
+        return idx
+
+    def add_edge(src, dst):
+        edges.append((src, dst))
+
+    study_title = schema.get("study_title") or "Study"
+    short_title = study_title[:40] + "…" if len(study_title) > 40 else study_title
+
+    center = add_node(short_title, "#1B3A5C", 40, study_title)
+
+    categories = {
+        "Objectives": (schema.get("study_objectives") or "—", "#3A7BD5", 28),
+        "Estimands": ("; ".join(
+            (e.get("treatment_comparison") or e.get("population") or "")
+            for e in (schema.get("estimands") or [])[:3]
+        ) or "—", "#5B8DB8", 28),
+        "Populations": (", ".join(
+            (p.get("abbreviation") or p.get("name") or "")
+            for p in (schema.get("analysis_populations") or [])[:4]
+        ) or "—", "#27AE60", 28),
+        "Endpoints": (f"Primary: {schema.get('primary_endpoint_type') or '—'}", "#F0A500", 28),
+        "Methods": (", ".join(
+            (m.get("method") or m if isinstance(m, str) else "")
+            for m in (schema.get("statistical_methods") or [])[:3]
+        ) or "—", "#E67E22", 28),
+        "SDTM Domains": (", ".join(
+            (d.get("domain") or d if isinstance(d, str) else "")
+            for d in (schema.get("sdtm_domains_expected") or [])[:6]
+        ) or "—", "#8E44AD", 28),
+        "ADaM Datasets": (", ".join(
+            (d.get("dataset") or d if isinstance(d, str) else "")
+            for d in (schema.get("adam_datasets_expected") or [])[:6]
+        ) or "—", "#C0392B", 28),
+        "Open Questions": (f"{len(schema.get('open_questions') or [])} flagged", "#7F8C8D", 24),
+    }
+
+    # Position category nodes in a circle
+    cat_nodes = {}
+    n = len(categories)
+    for i, (cat, (detail, color, size)) in enumerate(categories.items()):
+        angle = 2 * math.pi * i / n
+        cat_idx = add_node(cat, color, size, f"{cat}\n{detail}")
+        add_edge(center, cat_idx)
+        cat_nodes[cat] = (cat_idx, angle, color)
+
+    # Add leaf nodes for SDTM domains and ADaM datasets
+    for cat, leaf_getter, leaf_color in [
+        ("SDTM Domains", lambda: [
+            (d.get("domain") or str(d)) for d in (schema.get("sdtm_domains_expected") or [])[:8]
+        ], "#D7BDE2"),
+        ("ADaM Datasets", lambda: [
+            (d.get("dataset") or str(d)) for d in (schema.get("adam_datasets_expected") or [])[:8]
+        ], "#F1948A"),
+    ]:
+        if cat in cat_nodes:
+            parent_idx, parent_angle, _ = cat_nodes[cat]
+            leaves = leaf_getter()
+            for j, leaf in enumerate(leaves):
+                if leaf:
+                    leaf_idx = add_node(leaf, leaf_color, 16)
+                    add_edge(parent_idx, leaf_idx)
+
+    # ── Layout: spring-inspired manual positioning ─────────────────────────
+    pos = {center: (0, 0)}
+    n_cats = len(cat_nodes)
+    for i, (cat, (cat_idx, angle, _)) in enumerate(cat_nodes.items()):
+        r = 1.8
+        pos[cat_idx] = (r * math.cos(angle), r * math.sin(angle))
+
+    # Position leaf nodes
+    leaf_start = n_cats + 1
+    for i in range(leaf_start, len(nodes)):
+        # Find parent
+        parent = next((src for src, dst in edges if dst == i), 0)
+        px, py = pos.get(parent, (0, 0))
+        siblings = [dst for src, dst in edges if src == parent and dst >= leaf_start]
+        sib_idx = siblings.index(i) if i in siblings else 0
+        n_sibs = len(siblings)
+        spread = 0.5
+        offset_angle = math.atan2(py, px)
+        delta = (sib_idx - (n_sibs - 1) / 2) * spread / max(n_sibs, 1)
+        leaf_angle = offset_angle + delta
+        pos[i] = (px + 1.2 * math.cos(leaf_angle), py + 1.2 * math.sin(leaf_angle))
+
+    # ── Build Plotly figure ────────────────────────────────────────────────
+    edge_x, edge_y = [], []
+    for src, dst in edges:
+        x0, y0 = pos.get(src, (0, 0))
+        x1, y1 = pos.get(dst, (0, 0))
+        edge_x += [x0, x1, None]
+        edge_y += [y0, y1, None]
+
+    node_x = [pos.get(i, (0, 0))[0] for i in range(len(nodes))]
+    node_y = [pos.get(i, (0, 0))[1] for i in range(len(nodes))]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=edge_x, y=edge_y, mode="lines",
+        line=dict(width=1.5, color="#444"),
+        hoverinfo="none",
+    ))
+    fig.add_trace(go.Scatter(
+        x=node_x, y=node_y, mode="markers+text",
+        marker=dict(size=node_sizes, color=node_colors, line=dict(width=1.5, color="#fff")),
+        text=nodes,
+        textposition="top center",
+        hovertext=node_text,
+        hoverinfo="text",
+        textfont=dict(size=10, color="#FFFFFF"),
+    ))
+    fig.update_layout(
+        showlegend=False,
+        paper_bgcolor="#1C2B3A",
+        plot_bgcolor="#1C2B3A",
+        margin=dict(l=0, r=0, t=20, b=0),
+        height=560,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Structured tree view below graph ──────────────────────────────────
+    st.divider()
+    st.subheader("Structured Representation")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Study**")
+        st.markdown(f"- Title: {schema.get('study_title', '—')}")
+        st.markdown(f"- Phase: {schema.get('phase', '—')}")
+        st.markdown(f"- TA: {schema.get('therapeutic_area', '—')}")
+
+        pops = schema.get("analysis_populations") or []
+        if pops:
+            st.markdown("**Populations**")
+            for p in pops:
+                abbr = p.get("abbreviation") or p.get("name") or "—"
+                desc = p.get("description") or ""
+                st.markdown(f"- **{abbr}** — {desc[:80]}")
+
+        eps = schema.get("endpoints", {})
+        primary = (eps.get("primary") or [])
+        if primary:
+            st.markdown("**Primary Endpoint**")
+            for e in primary[:2]:
+                st.markdown(f"- {e.get('type','')}: {e.get('description','')[:100]}")
+
+    with col2:
+        sdtm = schema.get("sdtm_domains_expected") or []
+        if sdtm:
+            st.markdown("**SDTM Domains**")
+            for d in sdtm:
+                dom = d.get("domain") or str(d) if isinstance(d, dict) else str(d)
+                rat = d.get("rationale", "") if isinstance(d, dict) else ""
+                st.markdown(f"- **{dom}** — {rat[:80]}")
+
+        adam = schema.get("adam_datasets_expected") or []
+        if adam:
+            st.markdown("**ADaM Datasets**")
+            for d in adam:
+                ds = d.get("dataset") or str(d) if isinstance(d, dict) else str(d)
+                rat = d.get("rationale", "") if isinstance(d, dict) else ""
+                st.markdown(f"- **{ds}** — {rat[:80]}")
+
+
+# ---------------------------------------------------------------------------
 
 def _tab_sap_summary(schema: dict):
     st.header("Detected SAP Summary")
@@ -1138,12 +1326,13 @@ def main():
 
     st.title("Standards Gate — CDISC Mapping Copilot")
     st.markdown(
-        "_An AI copilot for SDTM/ADaM mapping review. All outputs are **recommendations** "
-        "that require human validation — never auto-generated specifications._"
+        "_A biometrics knowledge layer that converts SAPs into structured delivery metadata — "
+        "all outputs are **recommendations** that require human validation._"
     )
 
     tabs = st.tabs([
         "Input",
+        "Knowledge Model",
         "SAP Summary",
         "SDTM Mapping",
         "ADaM Mapping",
@@ -1157,12 +1346,12 @@ def main():
 
     schema = st.session_state.get("schema")
 
-    # Pipeline tab is always available (index 6), render it regardless of schema state
-    with tabs[6]:
+    # Pipeline tab always available (index 7)
+    with tabs[7]:
         _tab_pipeline()
 
     if schema is None:
-        for tab in tabs[1:6]:
+        for tab in tabs[1:7]:
             with tab:
                 st.info(
                     "No SAP loaded. Use the **Input** tab to upload a PDF or look up a study.",
@@ -1171,18 +1360,21 @@ def main():
         return
 
     with tabs[1]:
-        _tab_sap_summary(schema)
+        _tab_knowledge_model(schema)
 
     with tabs[2]:
-        _tab_sdtm(schema)
+        _tab_sap_summary(schema)
 
     with tabs[3]:
-        _tab_adam(schema)
+        _tab_sdtm(schema)
 
     with tabs[4]:
-        _tab_open_questions(schema)
+        _tab_adam(schema)
 
     with tabs[5]:
+        _tab_open_questions(schema)
+
+    with tabs[6]:
         _tab_export(schema)
 
 

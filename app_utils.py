@@ -126,19 +126,19 @@ def get_confidence_color(score) -> str:
 
 
 def get_confidence_label(score) -> str:
-    """Return a text label for a confidence score."""
+    """Return an evidence label for a confidence score — interpretable by senior biometricians."""
     if score is None:
-        return "N/A"
+        return "Missing SAP Support"
     try:
         score = int(score)
     except (TypeError, ValueError):
-        return "N/A"
+        return "Missing SAP Support"
     if score >= 80:
-        return f"{score}% (HIGH)"
+        return "Direct SAP Support"
     elif score >= 60:
-        return f"{score}% (MEDIUM)"
+        return "Inferred from Standards"
     else:
-        return f"{score}% (LOW)"
+        return "Limited SAP Evidence"
 
 
 # ---------------------------------------------------------------------------
