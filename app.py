@@ -291,6 +291,48 @@ immediate review before proceeding with study setup.</span>
 # Tab: Knowledge Model
 # ---------------------------------------------------------------------------
 
+# ADaM → SDTM source domain mapping (deterministic CDISC relationships)
+_ADAM_TO_SDTM: dict[str, list[str]] = {
+    "ADSL": ["DM", "DS"],
+    "ADAE": ["AE", "CM", "DM"],
+    "ADTTE": ["AE", "DS", "DM"],
+    "ADQS": ["QS", "DM"],
+    "ADEFF": ["VS", "LB", "QS", "DM"],
+    "ADVS": ["VS", "DM"],
+    "ADLB": ["LB", "DM"],
+    "ADPC": ["PC", "EX", "DM"],
+    "ADPP": ["PP", "PC", "DM"],
+    "ADEG": ["EG", "DM"],
+    "ADRS": ["RS", "TR", "TU", "DM"],
+    "ADBM": ["LB", "DM"],
+    "ADCM": ["CM", "DM"],
+    "ADMH": ["MH", "DM"],
+}
+
+# Endpoint keyword → likely ADaM candidates
+_EP_HINTS: list[tuple[list[str], list[str]]] = [
+    (["TTE", "TIME TO EVENT", "SURVIVAL", "EVENT-FREE", "RELAPSE-FREE", "PFS", "OS "],
+     ["ADTTE"]),
+    (["PRO", "PATIENT REPORTED", "QUESTIONNAIRE", "SCALE", "SCORE", "CDR", "ADAS", "MMSE",
+      "COGNITIVE", "BEHAVIORAL", "FUNCTIONAL"],
+     ["ADQS"]),
+    (["PK", "PHARMACOKINETIC", "CONCENTRATION", "AUC", "CMAX", "TMAX", "T1/2"],
+     ["ADPC", "ADPP"]),
+    (["TUMOR", "ORR", "DCR", "RECIST", "RADIOLOG", "IMAGING", "PET", "MRI"],
+     ["ADRS"]),
+    (["ECG", "QTC", "QT INTERVAL"],
+     ["ADEG"]),
+    (["LAB", "BIOMARKER", "HEMATOL", "CHEMISTRY", "SERUM", "PLASMA LEVEL"],
+     ["ADLB"]),
+    (["VITAL", "BLOOD PRESSURE", "WEIGHT", "BMI", "HEIGHT"],
+     ["ADVS"]),
+    (["ADVERSE", "SAFETY", "AE ", "TOLERABILITY"],
+     ["ADAE"]),
+    (["CFB", "CHANGE FROM BASELINE", "MEAN CHANGE"],
+     ["ADEFF", "ADQS"]),
+]
+
+
 def _methods_summary(methods) -> str:
     if not methods:
         return "—"
@@ -303,162 +345,336 @@ def _methods_summary(methods) -> str:
         if methods.get("multiplicity_adjustment"):
             parts.append("Multiplicity adjustment")
         return ", ".join(parts) or "—"
-    # list fallback
     return ", ".join(str(m) for m in methods[:3]) or "—"
 
 
-def _tab_knowledge_model(schema: dict):
-    import plotly.graph_objects as go
+def _match_adam_for_endpoint(ep: dict, adam_names: list[str]) -> list[str]:
+    """Infer which ADaM datasets relate to an endpoint using type/description keywords."""
+    text = ((ep.get("type") or "") + " " + (ep.get("description") or "")).upper()
+    for keywords, candidates in _EP_HINTS:
+        if any(k in text for k in keywords):
+            matched = [a for a in candidates if a in adam_names]
+            if matched:
+                return matched[:2]
+    # fallback: first non-core ADaM
+    non_core = [a for a in adam_names if a not in ("ADSL",)]
+    return non_core[:1] if non_core else []
 
-    st.header("Study Knowledge Model")
-    st.caption(
-        "Structured representation extracted from the SAP — "
-        "the durable knowledge asset that drives all downstream recommendations."
-    )
+
+def _build_knowledge_graph_html(schema: dict) -> str:
+    """Build an interactive pyvis graph with 5-level CDISC lineage hierarchy."""
+    from pyvis.network import Network
+    import tempfile, os, json as _json
 
     meta = schema.get("metadata", {})
     study_title = meta.get("study_title") or "Study"
-    short_title = study_title[:35] + "…" if len(study_title) > 35 else study_title
+    short_title = study_title[:32] + "…" if len(study_title) > 32 else study_title
 
-    # ── Build tree: left-to-right hierarchy ──────────────────────────────
-    # Layout columns: x=0 (study), x=1 (categories), x=2 (leaves)
-    # y positions are evenly spaced per column
-
-    nodes_info = []  # {label, hover, color, size, x, y}
-    edges = []       # (src_idx, dst_idx)
-
-    def add_node(label, hover, color, size, x, y):
-        idx = len(nodes_info)
-        nodes_info.append({"label": label, "hover": hover, "color": color,
-                           "size": size, "x": x, "y": y})
-        return idx
-
-    # ── Level 0: Study ────────────────────────────────────────────────────
-    center = add_node(short_title, study_title, "#1B3A5C", 44, 0, 0)
-
-    # ── Level 1: Category groups ──────────────────────────────────────────
     pops = schema.get("analysis_populations") or []
+    estimands = schema.get("estimands") or []
     eps_primary = (schema.get("endpoints", {}).get("primary") or [])
     eps_secondary = (schema.get("endpoints", {}).get("secondary") or [])
+    methods = schema.get("statistical_methods") or {}
     sdtm_list = schema.get("sdtm_domains_expected") or []
     adam_list = schema.get("adam_datasets_expected") or []
     open_qs = schema.get("open_questions") or []
-    estimands = schema.get("estimands") or []
 
-    categories = [
-        # (label, hover_detail, color, leaves_getter)
-        ("Populations",
-         f"{len(pops)} population(s): " + ", ".join((p.get("abbreviation") or p.get("name") or "") for p in pops[:4]),
-         "#27AE60",
-         [(p.get("abbreviation") or p.get("name") or "?")
-          for p in pops[:6]]),
-        ("Estimands",
-         f"{len(estimands)} estimand(s)",
-         "#5B8DB8",
-         [(e.get("treatment_comparison") or e.get("population") or f"Estimand {i+1}")[:30]
-          for i, e in enumerate(estimands[:4])]),
-        ("Endpoints",
-         f"{len(eps_primary)} primary · {len(eps_secondary)} secondary",
-         "#F0A500",
-         ([(f"P: {e.get('type','?')}" ) for e in eps_primary[:3]] +
-          [(f"S: {e.get('type','?')}") for e in eps_secondary[:3]])),
-        ("Methods",
-         _methods_summary(schema.get("statistical_methods")),
-         "#E67E22",
-         [v for v in [
-             schema.get("statistical_methods", {}).get("primary_analysis_method"),
-             "Estimand framework" if (schema.get("statistical_methods") or {}).get("estimand_framework") else None,
-             "Multiplicity adj." if (schema.get("statistical_methods") or {}).get("multiplicity_adjustment") else None,
-             "Bayesian elements" if (schema.get("statistical_methods") or {}).get("bayesian_elements") else None,
-         ] if v]),
-        ("SDTM Domains",
-         f"{len(sdtm_list)} domain(s)",
-         "#8E44AD",
-         [(d.get("domain") or str(d)) if isinstance(d, dict) else str(d) for d in sdtm_list[:10]]),
-        ("ADaM Datasets",
-         f"{len(adam_list)} dataset(s)",
-         "#C0392B",
-         [(d.get("dataset") or str(d)) if isinstance(d, dict) else str(d) for d in adam_list[:10]]),
-        ("Open Questions",
-         f"{len(open_qs)} flagged item(s)",
-         "#7F8C8D",
-         [q.get("question", "")[:35] for q in open_qs[:4]]),
-    ]
+    adam_names = [(d.get("dataset") or str(d)) if isinstance(d, dict) else str(d) for d in adam_list]
+    sdtm_names = [(d.get("domain") or str(d)) if isinstance(d, dict) else str(d) for d in sdtm_list]
 
-    n_cats = len(categories)
-    cat_y_positions = [(n_cats - 1) / 2 - i for i in range(n_cats)]
+    net = Network(height="720px", width="100%", bgcolor="#111C27",
+                  font_color="white", directed=True)
 
-    cat_nodes = []
-    for i, (label, hover, color, leaves) in enumerate(categories):
-        cat_idx = add_node(label, hover, color, 30, 1, cat_y_positions[i])
-        edges.append((center, cat_idx))
-        cat_nodes.append((cat_idx, leaves, color))
+    # Shared counter for unique IDs
+    _id = [0]
+    def uid(prefix="n"):
+        _id[0] += 1
+        return f"{prefix}_{_id[0]}"
 
-    # ── Level 2: Leaf nodes ───────────────────────────────────────────────
-    leaf_colors = {
-        "#27AE60": "#A9DFBF",
-        "#5B8DB8": "#AED6F1",
-        "#F0A500": "#FAD7A0",
-        "#E67E22": "#FDEBD0",
-        "#8E44AD": "#D7BDE2",
-        "#C0392B": "#F1948A",
-        "#7F8C8D": "#CCD1D1",
+    def node(nid, label, title, color, size=20, level=0, shape="dot"):
+        net.add_node(nid, label=label, title=title, color={"background": color,
+            "border": "#ffffff", "highlight": {"background": color, "border": "#FFD700"}},
+            size=size, level=level, shape=shape,
+            font={"size": 11, "color": "#ffffff", "face": "Inter, sans-serif"})
+
+    def edge(src, dst, color="#3A5A7C", dashes=False):
+        net.add_edge(src, dst, color=color, width=1.5,
+                     arrows={"to": {"enabled": True, "scaleFactor": 0.4}},
+                     dashes=dashes, smooth={"type": "cubicBezier", "forceDirection": "horizontal"})
+
+    # ── Level 0: Study root ───────────────────────────────────────────────
+    root = "study_root"
+    node(root, short_title,
+         f"{study_title}\nPhase: {meta.get('phase') or '—'} | TA: {meta.get('therapeutic_area') or '—'}\nSponsor: {meta.get('sponsor') or '—'}",
+         "#1B3A5C", size=36, level=0, shape="box")
+
+    # ── Level 1: Three pillars ────────────────────────────────────────────
+    ctx_id, plan_id, oq_id = "ctx", "plan", "oq"
+    node(ctx_id, "Study Context", f"{len(pops)} populations · {len(estimands)} estimands",
+         "#1A5276", size=26, level=1, shape="box")
+    node(plan_id, "Analysis Plan",
+         f"{len(eps_primary)} primary · {len(eps_secondary)} secondary endpoints",
+         "#1A3A5C", size=26, level=1, shape="box")
+    node(oq_id, f"Open Questions ({len(open_qs)})",
+         f"{sum(1 for q in open_qs if (q.get('severity') or '').upper() == 'HIGH')} HIGH severity",
+         "#4A235A", size=22, level=1, shape="box")
+    edge(root, ctx_id, "#2E86C1")
+    edge(root, plan_id, "#2E86C1")
+    edge(root, oq_id, "#8E44AD")
+
+    # ── Level 2 under Study Context ───────────────────────────────────────
+    pop_grp = uid("pop_grp")
+    node(pop_grp, f"Populations ({len(pops)})", "Analysis populations defined in the SAP",
+         "#1E8449", size=20, level=2)
+    edge(ctx_id, pop_grp, "#27AE60")
+
+    est_grp = uid("est_grp")
+    node(est_grp, f"Estimands ({len(estimands)})", "ICH E9(R1) estimand framework",
+         "#1A6690", size=20, level=2)
+    edge(ctx_id, est_grp, "#5B8DB8")
+
+    meth_grp = uid("meth_grp")
+    node(meth_grp, "Statistical Methods", _methods_summary(methods),
+         "#BA5A00", size=20, level=2)
+    edge(ctx_id, meth_grp, "#E67E22")
+
+    # ── Level 3: Populations ──────────────────────────────────────────────
+    for p in pops[:6]:
+        abbr = p.get("abbreviation") or p.get("name") or "Pop"
+        desc = p.get("description") or abbr
+        pid = uid("pop")
+        node(pid, abbr, desc[:120], "#A9DFBF", size=14, level=3)
+        edge(pop_grp, pid, "#27AE60")
+
+    # ── Level 3: Estimands ────────────────────────────────────────────────
+    for i, e in enumerate(estimands[:5]):
+        label = (e.get("treatment_comparison") or e.get("population") or f"Estimand {i+1}")[:28]
+        eid = uid("est")
+        node(eid, label, str(e)[:200], "#AED6F1", size=14, level=3)
+        edge(est_grp, eid, "#5B8DB8")
+
+    # ── Level 3: Methods details ──────────────────────────────────────────
+    method_items = []
+    if isinstance(methods, dict):
+        if methods.get("primary_analysis_method"):
+            method_items.append(("Primary: " + str(methods["primary_analysis_method"])[:30],
+                                  str(methods["primary_analysis_method"])))
+        if methods.get("multiplicity_adjustment"):
+            method_items.append(("Multiplicity adj.", "Multiplicity adjustment applied"))
+        if methods.get("estimand_framework"):
+            method_items.append(("Estimand framework", "ICH E9(R1) estimand framework"))
+        if methods.get("bayesian_elements"):
+            method_items.append(("Bayesian elements", "Bayesian statistical elements"))
+        if methods.get("missing_data_handling"):
+            method_items.append((f"Missing data: {str(methods['missing_data_handling'])[:25]}",
+                                  str(methods["missing_data_handling"])))
+    for label, title in method_items[:5]:
+        mid = uid("meth")
+        node(mid, label, title, "#FDEBD0", size=13, level=3)
+        edge(meth_grp, mid, "#E67E22")
+
+    # ── Level 2 under Analysis Plan ───────────────────────────────────────
+    primary_grp = uid("primary_grp")
+    node(primary_grp, f"Primary Endpoints ({len(eps_primary)})", "Primary efficacy endpoints",
+         "#7D6608", size=20, level=2)
+    edge(plan_id, primary_grp, "#F0A500")
+
+    secondary_grp = uid("secondary_grp")
+    node(secondary_grp, f"Secondary Endpoints ({len(eps_secondary)})", "Secondary endpoints",
+         "#5D6D7E", size=18, level=2)
+    edge(plan_id, secondary_grp, "#AAB7B8")
+
+    # ── Levels 3–5: Endpoint → ADaM → SDTM lineage ───────────────────────
+    def _add_endpoint_lineage(ep: dict, parent_id: str, ep_idx: int, ep_color: str):
+        ep_type = ep.get("type") or f"Endpoint {ep_idx+1}"
+        ep_desc = ep.get("description") or ep_type
+        short = ep_type[:28]
+        ep_id = uid("ep")
+        node(ep_id, short, ep_desc[:200], ep_color, size=16, level=3)
+        edge(parent_id, ep_id, ep_color)
+
+        # Level 4: ADaM datasets
+        matched_adams = _match_adam_for_endpoint(ep, adam_names)
+        if not matched_adams:
+            matched_adams = adam_names[:1]  # at minimum show ADSL fallback
+        for adam_name in matched_adams:
+            adam_id = uid(f"adam_{adam_name}")
+            # Find rationale from schema
+            adam_rat = next(
+                ((d.get("rationale") or "") for d in adam_list
+                 if isinstance(d, dict) and (d.get("dataset") or "") == adam_name),
+                adam_name
+            )
+            node(adam_id, adam_name, f"{adam_name}: {adam_rat[:120]}", "#8E44AD", size=18, level=4)
+            edge(ep_id, adam_id, "#8E44AD")
+
+            # Level 5: SDTM source domains
+            sdtm_sources = [s for s in _ADAM_TO_SDTM.get(adam_name, []) if s in sdtm_names]
+            if not sdtm_sources:
+                sdtm_sources = _ADAM_TO_SDTM.get(adam_name, [])[:3]
+            for sdtm_name in sdtm_sources[:4]:
+                sdtm_id = uid(f"sdtm_{sdtm_name}")
+                sdtm_rat = next(
+                    ((d.get("rationale") or "") for d in sdtm_list
+                     if isinstance(d, dict) and (d.get("domain") or "") == sdtm_name),
+                    sdtm_name
+                )
+                node(sdtm_id, sdtm_name, f"{sdtm_name}: {sdtm_rat[:120]}", "#D7BDE2", size=14, level=5)
+                edge(adam_id, sdtm_id, "#C0A0D8", dashes=True)
+
+    for i, ep in enumerate(eps_primary[:4]):
+        _add_endpoint_lineage(ep, primary_grp, i, "#F0A500")
+    for i, ep in enumerate(eps_secondary[:3]):
+        _add_endpoint_lineage(ep, secondary_grp, i, "#AAB7B8")
+
+    # ── Level 2–3: Open Questions ─────────────────────────────────────────
+    high_qs = [q for q in open_qs if (q.get("severity") or "").upper() == "HIGH"]
+    other_qs = [q for q in open_qs if (q.get("severity") or "").upper() != "HIGH"]
+
+    if high_qs:
+        high_grp = uid("high_grp")
+        node(high_grp, f"HIGH ({len(high_qs)})", "High-severity open questions requiring immediate attention",
+             "#922B21", size=18, level=2)
+        edge(oq_id, high_grp, "#E74C3C")
+        for q in high_qs[:4]:
+            qid = uid("oq_h")
+            label = (q.get("question") or q.get("topic") or "Open Q")[:32]
+            node(qid, label, (q.get("question") or "")[:200], "#F1948A", size=12, level=3)
+            edge(high_grp, qid, "#E74C3C")
+
+    if other_qs:
+        other_grp = uid("other_grp")
+        node(other_grp, f"MEDIUM/LOW ({len(other_qs)})", "Lower-severity open questions",
+             "#5D6D7E", size=16, level=2)
+        edge(oq_id, other_grp, "#AAB7B8")
+        for q in other_qs[:3]:
+            qid = uid("oq_m")
+            label = (q.get("question") or q.get("topic") or "Open Q")[:32]
+            node(qid, label, (q.get("question") or "")[:200], "#CCD1D1", size=11, level=3)
+            edge(other_grp, qid, "#AAB7B8")
+
+    # ── Pyvis options ─────────────────────────────────────────────────────
+    net.set_options(_json.dumps({
+        "layout": {
+            "hierarchical": {
+                "enabled": True,
+                "direction": "LR",
+                "sortMethod": "directed",
+                "levelSeparation": 200,
+                "nodeSpacing": 90,
+                "treeSpacing": 140,
+                "blockShifting": True,
+                "edgeMinimization": True,
+                "parentCentralization": True,
+            }
+        },
+        "physics": {"enabled": False},
+        "interaction": {
+            "dragNodes": True,
+            "dragView": True,
+            "zoomView": True,
+            "navigationButtons": True,
+            "tooltipDelay": 80,
+            "hover": True,
+        },
+        "edges": {
+            "smooth": {"type": "cubicBezier", "forceDirection": "horizontal", "roundness": 0.5},
+            "color": {"inherit": False},
+        },
+        "nodes": {
+            "borderWidth": 1,
+            "shadow": {"enabled": True, "size": 6, "x": 2, "y": 2},
+        },
+    }))
+
+    # Generate HTML and inject collapse-on-click JS
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
+        fpath = f.name
+    net.save_graph(fpath)
+    html = open(fpath, encoding="utf-8").read()
+    os.unlink(fpath)
+
+    collapse_js = """
+<script>
+(function() {
+  function waitForNetwork(cb) {
+    if (typeof network !== 'undefined') { cb(); }
+    else { setTimeout(function(){ waitForNetwork(cb); }, 100); }
+  }
+  waitForNetwork(function() {
+    var childMap = {};
+    edges.get().forEach(function(e) {
+      if (!childMap[e.from]) childMap[e.from] = [];
+      childMap[e.from].push(e.to);
+    });
+
+    var collapsed = {};
+
+    function getDesc(id) {
+      var desc = [], queue = (childMap[id] || []).slice();
+      while (queue.length) {
+        var n = queue.shift(); desc.push(n);
+        (childMap[n] || []).forEach(function(c){ queue.push(c); });
+      }
+      return desc;
     }
 
-    for cat_idx, leaves, cat_color in cat_nodes:
-        cat_x = nodes_info[cat_idx]["x"]
-        cat_y = nodes_info[cat_idx]["y"]
-        n_leaves = len(leaves)
-        leaf_color = leaf_colors.get(cat_color, "#CCCCCC")
-        for j, leaf in enumerate(leaves):
-            if not leaf:
-                continue
-            leaf_y = cat_y + (j - (n_leaves - 1) / 2) * 0.42
-            leaf_idx = add_node(
-                leaf[:18] + "…" if len(leaf) > 18 else leaf,
-                leaf, leaf_color, 14, 2, leaf_y
-            )
-            edges.append((cat_idx, leaf_idx))
+    network.on('click', function(params) {
+      if (!params.nodes.length) return;
+      var nid = params.nodes[0];
+      if (!(childMap[nid] && childMap[nid].length)) return;
+      collapsed[nid] = !collapsed[nid];
+      var desc = getDesc(nid);
+      var hide = !!collapsed[nid];
+      var nodeUpdates = desc.map(function(d){ return {id: d, hidden: hide}; });
+      nodes.update(nodeUpdates);
+      var edgeUpdates = [];
+      edges.get().forEach(function(e){
+        if (desc.indexOf(e.from) >= 0 || desc.indexOf(e.to) >= 0)
+          edgeUpdates.push({id: e.id, hidden: hide});
+      });
+      edges.update(edgeUpdates);
+      // Visual indicator on the parent node
+      var n = nodes.get(nid);
+      var lbl = (n.label || '').replace(/ [\\[\\+\\-\\]]+$/, '');
+      nodes.update([{id: nid, label: lbl + (hide ? ' [+]' : '')}]);
+    });
 
-    # ── Build Plotly figure ────────────────────────────────────────────────
-    edge_x, edge_y = [], []
-    for src, dst in edges:
-        x0, y0 = nodes_info[src]["x"], nodes_info[src]["y"]
-        x1, y1 = nodes_info[dst]["x"], nodes_info[dst]["y"]
-        edge_x += [x0, x1, None]
-        edge_y += [y0, y1, None]
+    // Legend hint
+    var hint = document.createElement('div');
+    hint.style.cssText = 'position:absolute;bottom:8px;left:12px;color:#8899AA;font-size:11px;pointer-events:none;';
+    hint.innerText = 'Click any node with children to collapse/expand  •  Scroll to zoom  •  Drag to pan';
+    document.getElementById('mynetwork').style.position = 'relative';
+    document.getElementById('mynetwork').appendChild(hint);
+  });
+})();
+</script>"""
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=edge_x, y=edge_y, mode="lines",
-        line=dict(width=1.2, color="#3A4A5C"),
-        hoverinfo="none",
-    ))
-    fig.add_trace(go.Scatter(
-        x=[n["x"] for n in nodes_info],
-        y=[n["y"] for n in nodes_info],
-        mode="markers+text",
-        marker=dict(
-            size=[n["size"] for n in nodes_info],
-            color=[n["color"] for n in nodes_info],
-            line=dict(width=1.5, color="#ffffff"),
-        ),
-        text=[n["label"] for n in nodes_info],
-        textposition="middle right",
-        hovertext=[n["hover"] for n in nodes_info],
-        hoverinfo="text",
-        textfont=dict(size=10, color="#FFFFFF"),
-    ))
-    fig.update_layout(
-        showlegend=False,
-        paper_bgcolor="#111C27",
-        plot_bgcolor="#111C27",
-        margin=dict(l=20, r=60, t=20, b=20),
-        height=600,
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.3, 2.9]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+    html = html.replace("</body>", collapse_js + "\n</body>")
+    return html
+
+
+def _tab_knowledge_model(schema: dict):
+    import streamlit.components.v1 as components
+
+    st.header("Study Knowledge Model")
+    st.caption(
+        "5-level CDISC lineage: Study → Context / Analysis Plan → "
+        "Endpoints → ADaM Datasets → SDTM Source Domains. "
+        "Click any node to collapse/expand its subtree."
     )
-    st.plotly_chart(fig, use_container_width=True)
+
+    meta = schema.get("metadata", {})
+    pops = schema.get("analysis_populations") or []
+    sdtm_list = schema.get("sdtm_domains_expected") or []
+    adam_list = schema.get("adam_datasets_expected") or []
+    eps_primary = (schema.get("endpoints", {}).get("primary") or [])
+
+    try:
+        html = _build_knowledge_graph_html(schema)
+        components.html(html, height=740, scrolling=False)
+    except Exception as exc:
+        st.error(f"Could not render knowledge graph: {exc}")
 
     # ── Structured details below graph ────────────────────────────────────
     st.divider()
