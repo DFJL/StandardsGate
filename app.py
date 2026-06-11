@@ -122,11 +122,7 @@ def _adam_score_badge(score) -> str:
 
 def _render_sidebar():
     with st.sidebar:
-        st.image(
-            "https://www.cdisc.org/sites/default/files/2021-01/cdisc-logo.svg",
-            width=120,
-        )
-        st.markdown("## StandardsGate")
+        st.markdown("### 🔬 StandardsGate")
         st.caption("CDISC Mapping Copilot · v1.0")
         st.divider()
 
