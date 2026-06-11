@@ -944,7 +944,69 @@ def _tab_adam(schema: dict):
 # Tab: Open Questions
 # ---------------------------------------------------------------------------
 
+def _load_sap_text(schema: dict) -> str | None:
+    """Return extracted SAP text for a schema, or None if unavailable."""
+    meta = schema.get("metadata", {})
+    nct_id = meta.get("nct_id", "")
+
+    # Try the stored text_path first (pipeline run in same session)
+    text_path_str = meta.get("text_path")
+    if text_path_str:
+        p = Path(text_path_str)
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+
+    # Fall back to KB extracted_text directory
+    if nct_id:
+        kb_text = Path(CONFIG["storage"]["base_path"]) / "extracted_text" / f"{nct_id}.txt"
+        if kb_text.exists():
+            return kb_text.read_text(encoding="utf-8")
+
+    return None
+
+
+def _find_sap_passage(text: str, query: str, window: int = 400) -> str | None:
+    """
+    Return a window of `window` chars around the best keyword match for `query`
+    in `text`. Returns None if no reasonable match found.
+    """
+    if not text or not query:
+        return None
+    # Build search terms from the query (drop common stop words)
+    stop = {"the", "a", "an", "in", "of", "for", "to", "is", "are", "be",
+            "was", "not", "this", "that", "with", "and", "or", "how", "what",
+            "which", "whether", "does", "should"}
+    words = [w.strip("?.,:;") for w in query.lower().split() if w.lower() not in stop and len(w) > 3]
+    if not words:
+        return None
+
+    text_lower = text.lower()
+    best_pos, best_hits = 0, 0
+    # Slide a window and count hits
+    step = max(1, len(text) // 300)
+    for i in range(0, len(text) - window, step):
+        chunk = text_lower[i: i + window]
+        hits = sum(1 for w in words if w in chunk)
+        if hits > best_hits:
+            best_hits, best_pos = hits, i
+
+    if best_hits == 0:
+        return None
+
+    start = max(0, best_pos)
+    end = min(len(text), start + window)
+    excerpt = text[start:end].strip()
+    # Trim to sentence boundaries if possible
+    if ". " in excerpt[20:]:
+        excerpt = excerpt[excerpt.index(". ", 20) + 2:]
+    if ". " in excerpt[50:]:
+        last = excerpt.rindex(". ", 0, -10)
+        excerpt = excerpt[:last + 1]
+    return f"…{excerpt}…" if start > 0 else excerpt
+
+
 def _tab_open_questions(schema: dict):
+    sap_text = _load_sap_text(schema)
     oqs_df = schema_to_open_questions_df(schema)
     high_count = int((oqs_df["Severity"] == "HIGH").sum()) if not oqs_df.empty else 0
 
@@ -985,23 +1047,145 @@ gaps in the SAP that must be clarified before CDISC implementation can proceed.<
     st.markdown(f"**Showing {len(filtered)} of {len(oqs_df)} items**")
     st.divider()
 
+    raw_qs = schema.get("open_questions") or []
+    q_by_question = {q.get("question", ""): q for q in raw_qs}
+
     for _, row in filtered.iterrows():
         sev = row["Severity"]
         cat = row["Category"]
         question = row["Question"]
 
         _, bg = _SEVERITY_COLORS.get(sev, ("#616161", "#F5F5F5"))
+        border = _SEVERITY_COLORS.get(sev, ("#616161", "#F5F5F5"))[0]
+
+        raw = q_by_question.get(question, {})
+        sap_section = raw.get("sap_section") or ""
+        sap_excerpt_stored = raw.get("sap_excerpt") or ""
+
+        section_html = (
+            f'<span style="font-size:0.75rem;color:#888;margin-left:8px;">'
+            f'📄 {sap_section}</span>' if sap_section else ""
+        )
 
         st.markdown(
-            f"""
-<div style="background:{bg};border-left:4px solid {_SEVERITY_COLORS[sev][0]};
-padding:12px 18px;border-radius:4px;margin-bottom:10px;">
-{_severity_badge(sev)}&nbsp;&nbsp;<span style="font-size:0.8rem;color:#555;">
-{cat}</span><br/><span style="margin-top:6px;display:block;">{question}</span>
-</div>
-""",
+            f"""<div style="background:{bg};border-left:4px solid {border};
+padding:12px 18px;border-radius:4px;margin-bottom:6px;">
+{_severity_badge(sev)}&nbsp;&nbsp;<span style="font-size:0.8rem;color:#555;">{cat}</span>
+{section_html}<br/>
+<span style="margin-top:6px;display:block;font-weight:500;">{question}</span>
+</div>""",
             unsafe_allow_html=True,
         )
+
+        # SAP excerpt — prefer stored, fall back to fuzzy search
+        excerpt = sap_excerpt_stored
+        if not excerpt and sap_text:
+            excerpt = _find_sap_passage(sap_text, question) or ""
+
+        if excerpt:
+            with st.expander("View SAP excerpt", expanded=False):
+                st.markdown(
+                    f'<div style="font-size:0.85rem;color:#444;background:#F8F9FA;'
+                    f'border-left:3px solid #BDBDBD;padding:10px 14px;border-radius:3px;'
+                    f'font-family:Georgia,serif;line-height:1.6;">{excerpt}</div>',
+                    unsafe_allow_html=True,
+                )
+        st.write("")
+
+
+# ---------------------------------------------------------------------------
+# Tab: SAP Text
+# ---------------------------------------------------------------------------
+
+def _tab_sap_text(schema: dict):
+    st.header("SAP Text Viewer")
+    st.caption(
+        "Extracted plain text from the source SAP PDF. "
+        "Use the search box to locate specific passages."
+    )
+
+    sap_text = _load_sap_text(schema)
+    if not sap_text:
+        st.info(
+            "SAP text is not available for this study. "
+            "Text is stored only when a study is processed through the pipeline in this session "
+            "or when the extracted_text directory is present in the knowledge base.",
+            icon="ℹ️",
+        )
+        return
+
+    meta = schema.get("metadata", {})
+    open_qs = schema.get("open_questions") or []
+
+    st.markdown(
+        f"**{len(sap_text):,} characters** extracted  ·  "
+        f"Source: `{meta.get('source_document') or 'SAP PDF'}`"
+    )
+
+    # ── Jump-to buttons from open questions ──────────────────────────────
+    if open_qs:
+        st.markdown("**Jump to open question context:**")
+        cols = st.columns(min(4, len(open_qs)))
+        for i, q in enumerate(open_qs[:8]):
+            label = (q.get("sap_section") or q.get("category") or f"Q{i+1}")[:22]
+            if cols[i % 4].button(f"📌 {label}", key=f"jump_{i}"):
+                st.session_state["sap_search"] = (q.get("question") or "")[:60]
+        st.divider()
+
+    # ── Search box ───────────────────────────────────────────────────────
+    search = st.text_input(
+        "Search in SAP text",
+        value=st.session_state.get("sap_search", ""),
+        placeholder="Enter keyword or phrase…",
+        key="sap_search_input",
+    )
+
+    if search and search.strip():
+        # Find all occurrences
+        text_lower = sap_text.lower()
+        query_lower = search.lower().strip()
+        matches = []
+        start = 0
+        while True:
+            pos = text_lower.find(query_lower, start)
+            if pos == -1:
+                break
+            matches.append(pos)
+            start = pos + 1
+
+        if matches:
+            st.success(f"Found **{len(matches)}** match(es). Showing up to 5.", icon="🔍")
+            for pos in matches[:5]:
+                snippet_start = max(0, pos - 300)
+                snippet_end = min(len(sap_text), pos + 400)
+                before = sap_text[snippet_start:pos].replace("\n", " ")
+                match_text = sap_text[pos: pos + len(search)]
+                after = sap_text[pos + len(search): snippet_end].replace("\n", " ")
+                st.markdown(
+                    f'<div style="font-size:0.85rem;background:#FFFDE7;border-left:3px solid #F9A825;'
+                    f'padding:10px 14px;border-radius:3px;margin-bottom:8px;'
+                    f'font-family:Georgia,serif;line-height:1.65;">'
+                    f'{"…" if snippet_start > 0 else ""}{before}'
+                    f'<mark style="background:#FFD54F;padding:1px 3px;border-radius:2px;">{match_text}</mark>'
+                    f'{after}{"…" if snippet_end < len(sap_text) else ""}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.warning(f'No matches found for "{search}".', icon="⚠️")
+        st.divider()
+
+    # ── Full text display ─────────────────────────────────────────────────
+    with st.expander("Full SAP Text", expanded=not bool(search)):
+        # Split into chunks of ~3000 chars to avoid huge single blocks
+        chunk_size = 3000
+        chunks = [sap_text[i: i + chunk_size] for i in range(0, len(sap_text), chunk_size)]
+        for chunk in chunks:
+            st.markdown(
+                f'<div style="font-size:0.82rem;font-family:Georgia,serif;'
+                f'line-height:1.7;color:#333;white-space:pre-wrap;">{chunk}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1577,6 +1761,7 @@ def main():
         "SDTM Mapping",
         "ADaM Mapping",
         "Open Questions",
+        "SAP Text",
         "Export",
         "Pipeline",
     ])
@@ -1586,12 +1771,12 @@ def main():
 
     schema = st.session_state.get("schema")
 
-    # Pipeline tab always available (index 7)
-    with tabs[7]:
+    # Pipeline tab always available (index 8)
+    with tabs[8]:
         _tab_pipeline()
 
     if schema is None:
-        for tab in tabs[1:7]:
+        for tab in tabs[1:8]:
             with tab:
                 st.info(
                     "No SAP loaded. Use the **Input** tab to upload a PDF or look up a study.",
@@ -1615,6 +1800,9 @@ def main():
         _tab_open_questions(schema)
 
     with tabs[6]:
+        _tab_sap_text(schema)
+
+    with tabs[7]:
         _tab_export(schema)
 
 
