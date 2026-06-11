@@ -202,25 +202,41 @@ def _tab_input():
                         st.error(f"Unexpected error: {exc}")
 
     with col_lookup:
-        st.subheader("Look Up by NCT ID")
-        nct_id_input = st.text_input(
-            "NCT Identifier",
-            placeholder="e.g. NCT01234567",
-            help="The study must have been processed by the pipeline first.",
-        )
-        if st.button("Load from Knowledge Base", type="primary", disabled=False):
-            if not nct_id_input.strip():
-                st.warning("Enter an NCT ID first.")
-            else:
-                nct_id = nct_id_input.strip().upper()
-                with st.spinner(f"Loading schema for {nct_id}…"):
-                    try:
-                        schema = lookup_from_index(nct_id, CONFIG)
-                        st.session_state["schema"] = schema
-                        st.session_state["source"] = nct_id
-                        st.success(f"Schema loaded for {nct_id}. Switch to the tabs above to review.", icon="✅")
-                    except FileNotFoundError as exc:
-                        st.warning(str(exc))
+        st.subheader("Look Up from Knowledge Base")
+
+        # Build dropdown options from KB
+        _kb_df = _load_master_index(CONFIG)
+        if not _kb_df.empty and "nct_id" in _kb_df.columns:
+            _kb_options = []
+            for _, _row in _kb_df.iterrows():
+                _nct = _row.get("nct_id", "")
+                _title = str(_row.get("study_title", ""))[:60] if _row.get("study_title") else ""
+                _ta = str(_row.get("therapeutic_area", "")) if _row.get("therapeutic_area") else ""
+                _label = f"{_nct}  —  {_title}" + (f"  [{_ta}]" if _ta else "")
+                _kb_options.append((_label, _nct))
+            _labels = [o[0] for o in _kb_options]
+            _nct_map = {o[0]: o[1] for o in _kb_options}
+
+            selected_label = st.selectbox(
+                "Select a study",
+                options=["— select —"] + _labels,
+                help="Studies already processed by the pipeline.",
+            )
+            nct_id_input = _nct_map.get(selected_label, "").strip() if selected_label != "— select —" else ""
+        else:
+            st.info("No studies in the knowledge base yet. Run the pipeline first.")
+            nct_id_input = st.text_input("Or enter NCT ID manually", placeholder="e.g. NCT01234567")
+
+        if st.button("Load from Knowledge Base", type="primary", disabled=not nct_id_input):
+            nct_id = nct_id_input.strip().upper()
+            with st.spinner(f"Loading schema for {nct_id}…"):
+                try:
+                    schema = lookup_from_index(nct_id, CONFIG)
+                    st.session_state["schema"] = schema
+                    st.session_state["source"] = nct_id
+                    st.success(f"Schema loaded for {nct_id}. Switch to the tabs above to review.", icon="✅")
+                except FileNotFoundError as exc:
+                    st.warning(str(exc))
                     except Exception as exc:
                         st.error(f"Failed to load schema: {exc}")
 
