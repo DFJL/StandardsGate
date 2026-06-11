@@ -309,7 +309,6 @@ def _methods_summary(methods) -> str:
 
 def _tab_knowledge_model(schema: dict):
     import plotly.graph_objects as go
-    import math
 
     st.header("Study Knowledge Model")
     st.caption(
@@ -317,145 +316,161 @@ def _tab_knowledge_model(schema: dict):
         "the durable knowledge asset that drives all downstream recommendations."
     )
 
-    # ── Build node/edge lists ─────────────────────────────────────────────
-    nodes, edges, node_colors, node_sizes, node_text = [], [], [], [], []
+    meta = schema.get("metadata", {})
+    study_title = meta.get("study_title") or "Study"
+    short_title = study_title[:35] + "…" if len(study_title) > 35 else study_title
 
-    def add_node(label, color, size, hover=""):
-        idx = len(nodes)
-        nodes.append(label)
-        node_colors.append(color)
-        node_sizes.append(size)
-        node_text.append(hover or label)
+    # ── Build tree: left-to-right hierarchy ──────────────────────────────
+    # Layout columns: x=0 (study), x=1 (categories), x=2 (leaves)
+    # y positions are evenly spaced per column
+
+    nodes_info = []  # {label, hover, color, size, x, y}
+    edges = []       # (src_idx, dst_idx)
+
+    def add_node(label, hover, color, size, x, y):
+        idx = len(nodes_info)
+        nodes_info.append({"label": label, "hover": hover, "color": color,
+                           "size": size, "x": x, "y": y})
         return idx
 
-    def add_edge(src, dst):
-        edges.append((src, dst))
+    # ── Level 0: Study ────────────────────────────────────────────────────
+    center = add_node(short_title, study_title, "#1B3A5C", 44, 0, 0)
 
-    study_title = schema.get("study_title") or "Study"
-    short_title = study_title[:40] + "…" if len(study_title) > 40 else study_title
+    # ── Level 1: Category groups ──────────────────────────────────────────
+    pops = schema.get("analysis_populations") or []
+    eps_primary = (schema.get("endpoints", {}).get("primary") or [])
+    eps_secondary = (schema.get("endpoints", {}).get("secondary") or [])
+    sdtm_list = schema.get("sdtm_domains_expected") or []
+    adam_list = schema.get("adam_datasets_expected") or []
+    open_qs = schema.get("open_questions") or []
+    estimands = schema.get("estimands") or []
 
-    center = add_node(short_title, "#1B3A5C", 40, study_title)
+    categories = [
+        # (label, hover_detail, color, leaves_getter)
+        ("Populations",
+         f"{len(pops)} population(s): " + ", ".join((p.get("abbreviation") or p.get("name") or "") for p in pops[:4]),
+         "#27AE60",
+         [(p.get("abbreviation") or p.get("name") or "?")
+          for p in pops[:6]]),
+        ("Estimands",
+         f"{len(estimands)} estimand(s)",
+         "#5B8DB8",
+         [(e.get("treatment_comparison") or e.get("population") or f"Estimand {i+1}")[:30]
+          for i, e in enumerate(estimands[:4])]),
+        ("Endpoints",
+         f"{len(eps_primary)} primary · {len(eps_secondary)} secondary",
+         "#F0A500",
+         ([(f"P: {e.get('type','?')}" ) for e in eps_primary[:3]] +
+          [(f"S: {e.get('type','?')}") for e in eps_secondary[:3]])),
+        ("Methods",
+         _methods_summary(schema.get("statistical_methods")),
+         "#E67E22",
+         [v for v in [
+             schema.get("statistical_methods", {}).get("primary_analysis_method"),
+             "Estimand framework" if (schema.get("statistical_methods") or {}).get("estimand_framework") else None,
+             "Multiplicity adj." if (schema.get("statistical_methods") or {}).get("multiplicity_adjustment") else None,
+             "Bayesian elements" if (schema.get("statistical_methods") or {}).get("bayesian_elements") else None,
+         ] if v]),
+        ("SDTM Domains",
+         f"{len(sdtm_list)} domain(s)",
+         "#8E44AD",
+         [(d.get("domain") or str(d)) if isinstance(d, dict) else str(d) for d in sdtm_list[:10]]),
+        ("ADaM Datasets",
+         f"{len(adam_list)} dataset(s)",
+         "#C0392B",
+         [(d.get("dataset") or str(d)) if isinstance(d, dict) else str(d) for d in adam_list[:10]]),
+        ("Open Questions",
+         f"{len(open_qs)} flagged item(s)",
+         "#7F8C8D",
+         [q.get("question", "")[:35] for q in open_qs[:4]]),
+    ]
 
-    categories = {
-        "Objectives": (schema.get("study_objectives") or "—", "#3A7BD5", 28),
-        "Estimands": ("; ".join(
-            (e.get("treatment_comparison") or e.get("population") or "")
-            for e in (schema.get("estimands") or [])[:3]
-        ) or "—", "#5B8DB8", 28),
-        "Populations": (", ".join(
-            (p.get("abbreviation") or p.get("name") or "")
-            for p in (schema.get("analysis_populations") or [])[:4]
-        ) or "—", "#27AE60", 28),
-        "Endpoints": (f"Primary: {(((schema.get('endpoints') or {}).get('primary') or [{}])[0].get('type')) or '—'}", "#F0A500", 28),
-        "Methods": (_methods_summary(schema.get("statistical_methods")), "#E67E22", 28),
-        "SDTM Domains": (", ".join(
-            (d.get("domain") or d if isinstance(d, str) else "")
-            for d in (schema.get("sdtm_domains_expected") or [])[:6]
-        ) or "—", "#8E44AD", 28),
-        "ADaM Datasets": (", ".join(
-            (d.get("dataset") or d if isinstance(d, str) else "")
-            for d in (schema.get("adam_datasets_expected") or [])[:6]
-        ) or "—", "#C0392B", 28),
-        "Open Questions": (f"{len(schema.get('open_questions') or [])} flagged", "#7F8C8D", 24),
+    n_cats = len(categories)
+    cat_y_positions = [(n_cats - 1) / 2 - i for i in range(n_cats)]
+
+    cat_nodes = []
+    for i, (label, hover, color, leaves) in enumerate(categories):
+        cat_idx = add_node(label, hover, color, 30, 1, cat_y_positions[i])
+        edges.append((center, cat_idx))
+        cat_nodes.append((cat_idx, leaves, color))
+
+    # ── Level 2: Leaf nodes ───────────────────────────────────────────────
+    leaf_colors = {
+        "#27AE60": "#A9DFBF",
+        "#5B8DB8": "#AED6F1",
+        "#F0A500": "#FAD7A0",
+        "#E67E22": "#FDEBD0",
+        "#8E44AD": "#D7BDE2",
+        "#C0392B": "#F1948A",
+        "#7F8C8D": "#CCD1D1",
     }
 
-    # Position category nodes in a circle
-    cat_nodes = {}
-    n = len(categories)
-    for i, (cat, (detail, color, size)) in enumerate(categories.items()):
-        angle = 2 * math.pi * i / n
-        cat_idx = add_node(cat, color, size, f"{cat}\n{detail}")
-        add_edge(center, cat_idx)
-        cat_nodes[cat] = (cat_idx, angle, color)
-
-    # Add leaf nodes for SDTM domains and ADaM datasets
-    for cat, leaf_getter, leaf_color in [
-        ("SDTM Domains", lambda: [
-            (d.get("domain") or str(d)) for d in (schema.get("sdtm_domains_expected") or [])[:8]
-        ], "#D7BDE2"),
-        ("ADaM Datasets", lambda: [
-            (d.get("dataset") or str(d)) for d in (schema.get("adam_datasets_expected") or [])[:8]
-        ], "#F1948A"),
-    ]:
-        if cat in cat_nodes:
-            parent_idx, parent_angle, _ = cat_nodes[cat]
-            leaves = leaf_getter()
-            for j, leaf in enumerate(leaves):
-                if leaf:
-                    leaf_idx = add_node(leaf, leaf_color, 16)
-                    add_edge(parent_idx, leaf_idx)
-
-    # ── Layout: spring-inspired manual positioning ─────────────────────────
-    pos = {center: (0, 0)}
-    n_cats = len(cat_nodes)
-    for i, (cat, (cat_idx, angle, _)) in enumerate(cat_nodes.items()):
-        r = 1.8
-        pos[cat_idx] = (r * math.cos(angle), r * math.sin(angle))
-
-    # Position leaf nodes
-    leaf_start = n_cats + 1
-    for i in range(leaf_start, len(nodes)):
-        # Find parent
-        parent = next((src for src, dst in edges if dst == i), 0)
-        px, py = pos.get(parent, (0, 0))
-        siblings = [dst for src, dst in edges if src == parent and dst >= leaf_start]
-        sib_idx = siblings.index(i) if i in siblings else 0
-        n_sibs = len(siblings)
-        spread = 0.5
-        offset_angle = math.atan2(py, px)
-        delta = (sib_idx - (n_sibs - 1) / 2) * spread / max(n_sibs, 1)
-        leaf_angle = offset_angle + delta
-        pos[i] = (px + 1.2 * math.cos(leaf_angle), py + 1.2 * math.sin(leaf_angle))
+    for cat_idx, leaves, cat_color in cat_nodes:
+        cat_x = nodes_info[cat_idx]["x"]
+        cat_y = nodes_info[cat_idx]["y"]
+        n_leaves = len(leaves)
+        leaf_color = leaf_colors.get(cat_color, "#CCCCCC")
+        for j, leaf in enumerate(leaves):
+            if not leaf:
+                continue
+            leaf_y = cat_y + (j - (n_leaves - 1) / 2) * 0.42
+            leaf_idx = add_node(
+                leaf[:18] + "…" if len(leaf) > 18 else leaf,
+                leaf, leaf_color, 14, 2, leaf_y
+            )
+            edges.append((cat_idx, leaf_idx))
 
     # ── Build Plotly figure ────────────────────────────────────────────────
     edge_x, edge_y = [], []
     for src, dst in edges:
-        x0, y0 = pos.get(src, (0, 0))
-        x1, y1 = pos.get(dst, (0, 0))
+        x0, y0 = nodes_info[src]["x"], nodes_info[src]["y"]
+        x1, y1 = nodes_info[dst]["x"], nodes_info[dst]["y"]
         edge_x += [x0, x1, None]
         edge_y += [y0, y1, None]
-
-    node_x = [pos.get(i, (0, 0))[0] for i in range(len(nodes))]
-    node_y = [pos.get(i, (0, 0))[1] for i in range(len(nodes))]
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=edge_x, y=edge_y, mode="lines",
-        line=dict(width=1.5, color="#444"),
+        line=dict(width=1.2, color="#3A4A5C"),
         hoverinfo="none",
     ))
     fig.add_trace(go.Scatter(
-        x=node_x, y=node_y, mode="markers+text",
-        marker=dict(size=node_sizes, color=node_colors, line=dict(width=1.5, color="#fff")),
-        text=nodes,
-        textposition="top center",
-        hovertext=node_text,
+        x=[n["x"] for n in nodes_info],
+        y=[n["y"] for n in nodes_info],
+        mode="markers+text",
+        marker=dict(
+            size=[n["size"] for n in nodes_info],
+            color=[n["color"] for n in nodes_info],
+            line=dict(width=1.5, color="#ffffff"),
+        ),
+        text=[n["label"] for n in nodes_info],
+        textposition="middle right",
+        hovertext=[n["hover"] for n in nodes_info],
         hoverinfo="text",
         textfont=dict(size=10, color="#FFFFFF"),
     ))
     fig.update_layout(
         showlegend=False,
-        paper_bgcolor="#1C2B3A",
-        plot_bgcolor="#1C2B3A",
-        margin=dict(l=0, r=0, t=20, b=0),
-        height=560,
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        paper_bgcolor="#111C27",
+        plot_bgcolor="#111C27",
+        margin=dict(l=20, r=60, t=20, b=20),
+        height=600,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.3, 2.9]),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── Structured tree view below graph ──────────────────────────────────
+    # ── Structured details below graph ────────────────────────────────────
     st.divider()
     st.subheader("Structured Representation")
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown("**Study**")
-        st.markdown(f"- Title: {schema.get('study_title', '—')}")
-        st.markdown(f"- Phase: {schema.get('phase', '—')}")
-        st.markdown(f"- TA: {schema.get('therapeutic_area', '—')}")
+        st.markdown(f"- Title: {meta.get('study_title') or '—'}")
+        st.markdown(f"- Phase: {meta.get('phase') or '—'}")
+        st.markdown(f"- TA: {meta.get('therapeutic_area') or '—'}")
 
-        pops = schema.get("analysis_populations") or []
         if pops:
             st.markdown("**Populations**")
             for p in pops:
@@ -463,28 +478,24 @@ def _tab_knowledge_model(schema: dict):
                 desc = p.get("description") or ""
                 st.markdown(f"- **{abbr}** — {desc[:80]}")
 
-        eps = schema.get("endpoints", {})
-        primary = (eps.get("primary") or [])
-        if primary:
+        if eps_primary:
             st.markdown("**Primary Endpoint**")
-            for e in primary[:2]:
+            for e in eps_primary[:2]:
                 st.markdown(f"- {e.get('type','')}: {e.get('description','')[:100]}")
 
     with col2:
-        sdtm = schema.get("sdtm_domains_expected") or []
-        if sdtm:
+        if sdtm_list:
             st.markdown("**SDTM Domains**")
-            for d in sdtm:
-                dom = d.get("domain") or str(d) if isinstance(d, dict) else str(d)
-                rat = d.get("rationale", "") if isinstance(d, dict) else ""
+            for d in sdtm_list:
+                dom = (d.get("domain") or str(d)) if isinstance(d, dict) else str(d)
+                rat = (d.get("rationale") or "") if isinstance(d, dict) else ""
                 st.markdown(f"- **{dom}** — {rat[:80]}")
 
-        adam = schema.get("adam_datasets_expected") or []
-        if adam:
+        if adam_list:
             st.markdown("**ADaM Datasets**")
-            for d in adam:
-                ds = d.get("dataset") or str(d) if isinstance(d, dict) else str(d)
-                rat = d.get("rationale", "") if isinstance(d, dict) else ""
+            for d in adam_list:
+                ds = (d.get("dataset") or str(d)) if isinstance(d, dict) else str(d)
+                rat = (d.get("rationale") or "") if isinstance(d, dict) else ""
                 st.markdown(f"- **{ds}** — {rat[:80]}")
 
 
