@@ -71,23 +71,23 @@ def _schema_to_index_row(schema: dict, source_pdf: str) -> dict:
 
     # Primary endpoint info
     primary_eps = endpoints.get("primary", [])
-    primary_type = primary_eps[0].get("type", "") if primary_eps else ""
-    primary_desc = primary_eps[0].get("description", "") if primary_eps else ""
+    primary_type = (primary_eps[0].get("type") or "") if primary_eps else ""
+    primary_desc = (primary_eps[0].get("description") or "") if primary_eps else ""
 
     # Analysis populations as pipe-delimited abbreviations
     pop_abbrevs = "|".join(
-        p.get("abbreviation", p.get("name", "")) for p in pops
+        (p.get("abbreviation") or p.get("name") or "") for p in pops
     )
 
     # SDTM domains: extract domain codes from the structured dicts
     sdtm_codes = "|".join(
-        d.get("domain", d) if isinstance(d, dict) else str(d)
+        (d.get("domain") or str(d)) if isinstance(d, dict) else str(d)
         for d in sdtm
     )
 
     # ADaM datasets: extract dataset names
     adam_names = "|".join(
-        d.get("dataset", d) if isinstance(d, dict) else str(d)
+        (d.get("dataset") or str(d)) if isinstance(d, dict) else str(d)
         for d in adam
     )
 
