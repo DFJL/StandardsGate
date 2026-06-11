@@ -291,6 +291,22 @@ immediate review before proceeding with study setup.</span>
 # Tab: Knowledge Model
 # ---------------------------------------------------------------------------
 
+def _methods_summary(methods) -> str:
+    if not methods:
+        return "—"
+    if isinstance(methods, dict):
+        parts = []
+        if methods.get("primary_analysis_method"):
+            parts.append(str(methods["primary_analysis_method"]))
+        if methods.get("estimand_framework"):
+            parts.append("Estimand framework")
+        if methods.get("multiplicity_adjustment"):
+            parts.append("Multiplicity adjustment")
+        return ", ".join(parts) or "—"
+    # list fallback
+    return ", ".join(str(m) for m in methods[:3]) or "—"
+
+
 def _tab_knowledge_model(schema: dict):
     import plotly.graph_objects as go
     import math
@@ -330,11 +346,8 @@ def _tab_knowledge_model(schema: dict):
             (p.get("abbreviation") or p.get("name") or "")
             for p in (schema.get("analysis_populations") or [])[:4]
         ) or "—", "#27AE60", 28),
-        "Endpoints": (f"Primary: {schema.get('primary_endpoint_type') or '—'}", "#F0A500", 28),
-        "Methods": (", ".join(
-            (m.get("method") or m if isinstance(m, str) else "")
-            for m in (schema.get("statistical_methods") or [])[:3]
-        ) or "—", "#E67E22", 28),
+        "Endpoints": (f"Primary: {(((schema.get('endpoints') or {}).get('primary') or [{}])[0].get('type')) or '—'}", "#F0A500", 28),
+        "Methods": (_methods_summary(schema.get("statistical_methods")), "#E67E22", 28),
         "SDTM Domains": (", ".join(
             (d.get("domain") or d if isinstance(d, str) else "")
             for d in (schema.get("sdtm_domains_expected") or [])[:6]
