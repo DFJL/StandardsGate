@@ -31,10 +31,10 @@ biostatistician and CDISC programmer firmly in control.
 
 **What StandardsGate does:**
 - Extracts key SAP content (endpoints, analysis populations, statistical methods, special assessments)
-  using AI-assisted text analysis
-- Applies a **deterministic rule engine** (no LLM hallucination) to derive SDTM and ADaM
-  recommendations based on detected study features
-- Assigns per-dataset confidence scores reflecting how well the SAP specifies each component
+  using **Claude (Anthropic)** for AI-assisted text analysis
+- Applies a **second LLM call** to derive SDTM domain and ADaM dataset recommendations —
+  using clinical reasoning, not deterministic rules, to align with CDISC standards
+- Assigns per-dataset confidence scores based on how well the SAP specifies each component
 - Surfaces open questions and ambiguities so they can be resolved before programming begins
 - Produces exportable mapping packages for use in specification authoring and team handoff
 
@@ -133,12 +133,16 @@ st.markdown(
 **Processing stages:**
 
 ```
-PDF text extraction  →  AI-assisted SAP parsing  →  Deterministic rule engine  →  Display
-    (pdfplumber/pypdf)      (Claude API, JSON output)    (SDTM + ADaM rules)       (this UI)
+PDF text extraction  →  AI SAP parsing  →  AI CDISC recommendations  →  Display
+    (pdfplumber/pypdf)    (Claude: extract    (Claude: derive SDTM        (this UI)
+                           structured schema)   domains + ADaM datasets)
 ```
 
-**Confidence scoring** is computed by the deterministic rule engine, not the LLM. It
-reflects how much SAP content was available to support each dataset recommendation:
+Two separate Claude API calls: the first extracts a structured schema from the SAP text;
+the second reasons over that schema to produce SDTM/ADaM recommendations with clinical rationale.
+
+**Confidence scoring** reflects how well the SAP specifies each component — assessed by the
+recommendation LLM based on available SAP content:
 - **≥80% (green):** SAP explicitly described the key design elements for this dataset
 - **60–79% (yellow):** Most elements present; minor inference was required
 - **<60% (red):** Significant inference required; SAP was vague on key aspects — flag for discussion
@@ -156,8 +160,8 @@ st.markdown(
 - **Image-based PDFs** (scanned documents) cannot be processed. Use a text-based PDF.
 - **Very long SAPs** (>120,000 characters) are truncated before AI extraction; the tail of
   the document (often appendices and shells) may not be reflected.
-- **Non-standard endpoint types** may not be fully captured by the current rule engine;
-  review the Detected Special Assessments section carefully.
+- **Non-standard endpoint types** may not be fully recognised by the AI; always review
+  the Detected Special Assessments section carefully.
 - **Extraction quality** depends on SAP structure and language clarity. Poorly structured
   or non-standard SAPs will yield lower confidence scores.
 - The tool does not currently validate against sponsor-specific standards or controlled terminology.
