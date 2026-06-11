@@ -694,6 +694,7 @@ def _get_pipeline_state() -> dict:
         "error": None,
         "start_time": 0.0,
         "results": [],
+        "stop_requested": False,
     }
 
 _PIPELINE_STATE = _get_pipeline_state()
@@ -710,8 +711,15 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
         if log:
             _PIPELINE_STATE["log"].append(log)
 
+    def _stopped() -> bool:
+        if _PIPELINE_STATE.get("stop_requested"):
+            _set(_PIPELINE_STATE["pct"], "⛔ Pipeline stopped by user.", "⛔ Stopped by user.")
+            return True
+        return False
+
     try:
         _PIPELINE_STATE["running"] = True
+        _PIPELINE_STATE["stop_requested"] = False
         _PIPELINE_STATE["log"] = []
         _PIPELINE_STATE["error"] = None
 
@@ -719,6 +727,7 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
         query_results = step1_query.run(config_override)
         _set(20, f"Step 1/5 complete — {len(query_results)} studies found.",
              f"Found {len(query_results)} studies with SAP documents.")
+        if _stopped(): return
 
         if not query_results:
             _set(100, "Done — no studies found.", "No studies matched the selected filters.")
@@ -727,11 +736,13 @@ def _run_pipeline_thread(config_override: dict, api_key: str):
             download_results = step2_download.run(config_override, query_results)
             _set(40, f"Step 2/5 complete — {len(download_results)} PDFs downloaded.",
                  f"Downloaded {len(download_results)} PDFs.")
+            if _stopped(): return
 
             _set(40, "Step 3/5 — Extracting text from PDFs…", "Extracting text from PDFs…")
             extraction_results = step3_extract.run(config_override, download_results)
             _set(60, f"Step 3/5 complete — {len(extraction_results)} documents extracted.",
                  f"Extracted text from {len(extraction_results)} documents.")
+            if _stopped(): return
 
             if api_key:
                 _set(60, "Step 4/5 — Parsing with Claude API…", "Parsing with Claude API…")
@@ -836,7 +847,10 @@ def _render_pipeline_status():
     if running:
         bar_val = max(pct / 100, 0.01)
         st.progress(bar_val, text=f"{msg}  ·  ⏱ {timer_str} elapsed")
-        st.caption("🔄 Refreshing every 3 seconds…")
+        col_cap, col_stop = st.columns([5, 1])
+        col_cap.caption("🔄 Refreshing every 3 seconds…")
+        if col_stop.button("⛔ Stop", key="stop_pipeline"):
+            _PIPELINE_STATE["stop_requested"] = True
     elif err:
         st.error("❌ Pipeline failed.")
         with st.expander("Error details", expanded=True):
@@ -872,7 +886,7 @@ def _render_pipeline_status():
 
     if not running and (pct == 100 or err):
         if st.button("Clear status", key="clear_pipeline"):
-            _PIPELINE_STATE.update({"running": False, "pct": 0, "msg": "", "log": [], "error": None, "results": []})
+            _PIPELINE_STATE.update({"running": False, "pct": 0, "msg": "", "log": [], "error": None, "results": [], "stop_requested": False})
             st.rerun()
 
 
@@ -942,11 +956,13 @@ def _tab_pipeline():
                 lambda x: f"https://clinicaltrials.gov/study/{x}" if pd.notna(x) else x
             ))
 
-        st.caption(f"Showing {len(filtered_df)} of {total_saps} SAPs")
-        st.dataframe(
+        st.caption(f"Showing {len(filtered_df)} of {total_saps} SAPs · Select rows to delete")
+        selection = st.dataframe(
             display_df,
             width="stretch",
             hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row",
             column_config={
                 "nct_id": st.column_config.TextColumn("NCT ID", width="small"),
                 "ct_url": st.column_config.LinkColumn("↗", display_text="View", width="small"),
@@ -959,7 +975,32 @@ def _tab_pipeline():
             },
         )
 
-        dl_col, _ = st.columns([1, 4])
+        selected_rows = selection.selection.rows if selection and selection.selection else []
+        selected_nct_ids = display_df.iloc[selected_rows]["nct_id"].tolist() if selected_rows and "nct_id" in display_df.columns else []
+
+        dl_col, del_col, _ = st.columns([1, 1, 3])
+        with del_col:
+            if selected_nct_ids:
+                if st.button(f"🗑 Delete {len(selected_nct_ids)} selected", type="primary"):
+                    storage_cfg = CONFIG["storage"]
+                    base_path = Path(storage_cfg["base_path"])
+                    index_path = base_path / storage_cfg["master_index_file"]
+                    # Remove rows from CSV
+                    new_df = index_df[~index_df["nct_id"].isin(selected_nct_ids)]
+                    new_df.to_csv(index_path, index=False)
+                    # Delete schema files
+                    schemas_dir = base_path / "parsed_schemas"
+                    for nct_id in selected_nct_ids:
+                        schema_file = schemas_dir / f"{nct_id}.json"
+                        if schema_file.exists():
+                            schema_file.unlink()
+                    # Sync to Drive
+                    if gdrive_sync.is_configured():
+                        gdrive_sync.upload_knowledge_base(base_path)
+                    st.success(f"Deleted {len(selected_nct_ids)} SAP(s): {', '.join(selected_nct_ids)}")
+                    st.rerun()
+            else:
+                st.button("🗑 Delete selected", disabled=True)
         with dl_col:
             storage_cfg = CONFIG["storage"]
             base_path = Path(storage_cfg["base_path"])
