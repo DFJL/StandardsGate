@@ -1,5 +1,5 @@
 """
-Google Drive sync module for StandardsGate.
+Google Drive sync module for Standards Gate.
 
 Keeps the knowledge base (master_index.csv + parsed_schemas JSONs) persistent
 across Streamlit Cloud redeploys by syncing to/from a Google Drive folder.

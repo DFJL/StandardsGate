@@ -1,5 +1,5 @@
 """
-StandardsGate — Component 2: AI Copilot UI
+Standards Gate — Component 2: AI Copilot UI
 
 A Streamlit review tool for CDISC SDTM/ADaM mapping recommendations derived
 from Statistical Analysis Plans. This is an AI copilot, not an auto-generator.
@@ -28,7 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 # Page configuration (must be first Streamlit call)
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="StandardsGate — CDISC Mapping Copilot",
+    page_title="Standards Gate — CDISC Mapping Copilot",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -122,7 +122,7 @@ def _adam_score_badge(score) -> str:
 
 def _render_sidebar():
     with st.sidebar:
-        st.markdown("### 🔬 StandardsGate")
+        st.markdown("### 🔬 Standards Gate")
         st.caption("CDISC Mapping Copilot · v1.0")
         st.divider()
 
@@ -1136,7 +1136,7 @@ def _tab_pipeline():
 def main():
     _render_sidebar()
 
-    st.title("StandardsGate — CDISC Mapping Copilot")
+    st.title("Standards Gate — CDISC Mapping Copilot")
     st.markdown(
         "_An AI copilot for SDTM/ADaM mapping review. All outputs are **recommendations** "
         "that require human validation — never auto-generated specifications._"

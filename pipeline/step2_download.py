@@ -135,7 +135,7 @@ def download_study_sap(
     logger.info(f"[{nct_id}] Downloading SAP from {url}")
 
     session = requests.Session()
-    session.headers.update({"User-Agent": "StandardsGate/1.0 (clinical trial research pipeline)"})
+    session.headers.update({"User-Agent": "Standards Gate/1.0 (clinical trial research pipeline)"})
 
     try:
         bytes_written = _download_file(session, url, pdf_path)

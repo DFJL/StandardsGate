@@ -1,5 +1,5 @@
 """
-app_utils.py — Helper functions for the StandardsGate Streamlit UI (Component 2).
+app_utils.py — Helper functions for the Standards Gate Streamlit UI (Component 2).
 
 These utilities bridge the pipeline modules (step3, step4, rule_engine) to the
 display layer.  None of the pipeline source files are modified; we import and

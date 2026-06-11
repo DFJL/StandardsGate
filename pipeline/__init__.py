@@ -1,1 +1,1 @@
-# StandardsGate pipeline package
+# Standards Gate pipeline package

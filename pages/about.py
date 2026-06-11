@@ -1,5 +1,5 @@
 """
-StandardsGate — About Page
+Standards Gate — About Page
 
 Explains the tool's purpose, methodology, and how to interpret results.
 Emphasises the human-in-the-loop design philosophy.
@@ -8,12 +8,12 @@ Emphasises the human-in-the-loop design philosophy.
 import streamlit as st
 
 st.set_page_config(
-    page_title="About — StandardsGate",
+    page_title="About — Standards Gate",
     page_icon="ℹ️",
     layout="wide",
 )
 
-st.title("About StandardsGate")
+st.title("About Standards Gate")
 st.caption("CDISC Mapping Copilot · Component 2")
 
 st.divider()
@@ -24,12 +24,12 @@ st.divider()
 st.header("Purpose & Scope")
 st.markdown(
     """
-StandardsGate is an **AI-assisted review copilot** for clinical trial data standards planning.
+Standards Gate is an **AI-assisted review copilot** for clinical trial data standards planning.
 It processes Statistical Analysis Plans (SAPs) and surfaces *recommendations* for SDTM domain
 and ADaM dataset requirements — accelerating the study setup process while keeping the
 biostatistician and CDISC programmer firmly in control.
 
-**What StandardsGate does:**
+**What Standards Gate does:**
 - Extracts key SAP content (endpoints, analysis populations, statistical methods, special assessments)
   using **Claude (Anthropic)** for AI-assisted text analysis
 - Applies a **second LLM call** to derive SDTM domain and ADaM dataset recommendations —
@@ -38,7 +38,7 @@ biostatistician and CDISC programmer firmly in control.
 - Surfaces open questions and ambiguities so they can be resolved before programming begins
 - Produces exportable mapping packages for use in specification authoring and team handoff
 
-**What StandardsGate does NOT do:**
+**What Standards Gate does NOT do:**
 - Auto-generate specifications or programming code
 - Replace review by a qualified CDISC programmer or biostatistician
 - Make final compliance decisions
@@ -54,7 +54,7 @@ st.divider()
 st.header("Human-in-the-Loop Design")
 st.markdown(
     """
-Every output in StandardsGate is framed as a **recommendation, not a decision**. The tool is
+Every output in Standards Gate is framed as a **recommendation, not a decision**. The tool is
 designed to augment expert judgment, not replace it.
 
 The language throughout is intentional:
@@ -126,7 +126,7 @@ st.markdown(
    structured extraction. The document must be text-based; scanned/image PDFs will
    yield limited results.
 
-2. **NCT ID Lookup** — If a study has been processed by the StandardsGate pipeline
+2. **NCT ID Lookup** — If a study has been processed by the Standards Gate pipeline
    (Component 1), its parsed schema can be loaded from the local knowledge base instantly,
    without repeating the AI extraction step.
 
@@ -171,7 +171,7 @@ st.markdown(
 st.divider()
 
 st.caption(
-    "StandardsGate is a decision-support tool. All recommendations require validation "
+    "Standards Gate is a decision-support tool. All recommendations require validation "
     "by qualified clinical data standards professionals. CDISC SDTM IG v3.4 and "
     "ADaM IG v2.1 are the authoritative references for implementation decisions."
 )

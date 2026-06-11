@@ -1,5 +1,5 @@
 """
-StandardsGate Component 1 — SAP Knowledge Base Pipeline
+Standards Gate Component 1 — SAP Knowledge Base Pipeline
 Main orchestrator script.
 
 Usage:
@@ -233,7 +233,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     setup_logging(config, log_dir)
 
     logger.info("=" * 70)
-    logger.info("StandardsGate Component 1 — SAP Knowledge Base Pipeline")
+    logger.info("Standards Gate Component 1 — SAP Knowledge Base Pipeline")
     logger.info("=" * 70)
 
     if args.dry_run:
@@ -446,7 +446,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "StandardsGate SAP Knowledge Base Pipeline\n"
+            "Standards Gate SAP Knowledge Base Pipeline\n"
             "Queries ClinicalTrials.gov, downloads SAP PDFs, extracts and parses them\n"
             "into a canonical JSON schema, and maintains a master_index.csv.\n"
         ),
