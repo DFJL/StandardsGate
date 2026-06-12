@@ -361,358 +361,375 @@ def _match_adam_for_endpoint(ep: dict, adam_names: list[str]) -> list[str]:
     return non_core[:1] if non_core else []
 
 
-def _build_knowledge_graph_html(schema: dict) -> str:
-    """Build an interactive pyvis graph with 5-level CDISC lineage hierarchy."""
-    from pyvis.network import Network
-    import tempfile, os, json as _json
+def _build_knowledge_graph(schema: dict) -> tuple:
+    """
+    Build streamlit-agraph nodes/edges + a node registry for drill-down.
+    Returns (nodes, edges, node_registry) where node_registry maps
+    node_id → dict with keys: type, label, data (schema fragment).
+    """
+    from streamlit_agraph import Node, Edge
 
     meta = schema.get("metadata", {})
     study_title = meta.get("study_title") or "Study"
     short_title = study_title[:32] + "…" if len(study_title) > 32 else study_title
 
-    pops = schema.get("analysis_populations") or []
-    estimands = schema.get("estimands") or []
-    eps_primary = (schema.get("endpoints", {}).get("primary") or [])
-    eps_secondary = (schema.get("endpoints", {}).get("secondary") or [])
-    methods = schema.get("statistical_methods") or {}
-    sdtm_list = schema.get("sdtm_domains_expected") or []
-    adam_list = schema.get("adam_datasets_expected") or []
-    open_qs = schema.get("open_questions") or []
+    pops       = schema.get("analysis_populations") or []
+    estimands  = schema.get("estimands") or []
+    eps_prim   = (schema.get("endpoints", {}).get("primary") or [])
+    eps_sec    = (schema.get("endpoints", {}).get("secondary") or [])
+    methods    = schema.get("statistical_methods") or {}
+    sdtm_list  = schema.get("sdtm_domains_expected") or []
+    adam_list  = schema.get("adam_datasets_expected") or []
+    open_qs    = schema.get("open_questions") or []
 
     adam_names = [(d.get("dataset") or str(d)) if isinstance(d, dict) else str(d) for d in adam_list]
     sdtm_names = [(d.get("domain") or str(d)) if isinstance(d, dict) else str(d) for d in sdtm_list]
 
-    net = Network(height="720px", width="100%", bgcolor="#111C27",
-                  font_color="white", directed=True)
+    nodes, edges, registry = [], [], {}
+    _counter = [0]
 
-    # Shared counter for unique IDs
-    _id = [0]
-    def uid(prefix="n"):
-        _id[0] += 1
-        return f"{prefix}_{_id[0]}"
+    def uid(prefix):
+        _counter[0] += 1
+        return f"{prefix}_{_counter[0]}"
 
-    def node(nid, label, title, color, size=20, level=0, shape="dot"):
-        net.add_node(nid, label=label, title=title, color={"background": color,
-            "border": "#ffffff", "highlight": {"background": color, "border": "#FFD700"}},
-            size=size, level=level, shape=shape,
-            font={"size": 11, "color": "#ffffff", "face": "Inter, sans-serif"})
+    def n(nid, label, color, size, shape="dot", node_type="group", data=None):
+        nodes.append(Node(
+            id=nid, label=label, size=size, shape=shape,
+            color={"background": color, "border": "#ffffff",
+                   "highlight": {"background": "#FFD700", "border": "#FFA500"}},
+            font={"size": 11, "color": "#ffffff", "face": "Inter,sans-serif"},
+        ))
+        registry[nid] = {"type": node_type, "label": label, "data": data or {}}
 
-    def edge(src, dst, color="#3A5A7C", dashes=False):
-        net.add_edge(src, dst, color=color, width=1.5,
-                     arrows={"to": {"enabled": True, "scaleFactor": 0.4}},
-                     dashes=dashes, smooth={"type": "cubicBezier", "forceDirection": "horizontal"})
+    def e(src, dst, color="#3A5A7C", dashes=False):
+        edges.append(Edge(source=src, target=dst, color=color,
+                          width=1.5, dashes=dashes,
+                          arrows="to"))
 
-    # ── Level 0: Study root ───────────────────────────────────────────────
-    root = "study_root"
-    node(root, short_title,
-         f"{study_title}\nPhase: {meta.get('phase') or '—'} | TA: {meta.get('therapeutic_area') or '—'}\nSponsor: {meta.get('sponsor') or '—'}",
-         "#1B3A5C", size=36, level=0, shape="box")
+    # ── Level 0 ───────────────────────────────────────────────────────────
+    n("study_root", short_title, "#1B3A5C", 40, shape="box",
+      node_type="study", data=meta)
 
-    # ── Level 1: Three pillars ────────────────────────────────────────────
-    ctx_id, plan_id, oq_id = "ctx", "plan", "oq"
-    node(ctx_id, "Study Context", f"{len(pops)} populations · {len(estimands)} estimands",
-         "#1A5276", size=26, level=1, shape="box")
-    node(plan_id, "Analysis Plan",
-         f"{len(eps_primary)} primary · {len(eps_secondary)} secondary endpoints",
-         "#1A3A5C", size=26, level=1, shape="box")
-    node(oq_id, f"Open Questions ({len(open_qs)})",
-         f"{sum(1 for q in open_qs if (q.get('severity') or '').upper() == 'HIGH')} HIGH severity",
-         "#4A235A", size=22, level=1, shape="box")
-    edge(root, ctx_id, "#2E86C1")
-    edge(root, plan_id, "#2E86C1")
-    edge(root, oq_id, "#8E44AD")
+    # ── Level 1 ───────────────────────────────────────────────────────────
+    n("ctx",  "Study Context",      "#1A5276", 28, shape="box", node_type="group",
+      data={"populations": pops, "estimands": estimands, "methods": methods})
+    n("plan", "Analysis Plan",      "#1A3A5C", 28, shape="box", node_type="group",
+      data={"primary": eps_prim, "secondary": eps_sec})
+    n("oq",   f"Open Questions ({len(open_qs)})", "#4A235A", 24, shape="box",
+      node_type="group", data={"questions": open_qs})
+    e("study_root", "ctx",  "#2E86C1")
+    e("study_root", "plan", "#2E86C1")
+    e("study_root", "oq",   "#8E44AD")
 
-    # ── Level 2 under Study Context ───────────────────────────────────────
+    # ── Level 2: Context ──────────────────────────────────────────────────
     pop_grp = uid("pop_grp")
-    node(pop_grp, f"Populations ({len(pops)})", "Analysis populations defined in the SAP",
-         "#1E8449", size=20, level=2)
-    edge(ctx_id, pop_grp, "#27AE60")
+    n(pop_grp, f"Populations ({len(pops)})", "#1E8449", 22, node_type="pop_group",
+      data={"populations": pops})
+    e("ctx", pop_grp, "#27AE60")
 
     est_grp = uid("est_grp")
-    node(est_grp, f"Estimands ({len(estimands)})", "ICH E9(R1) estimand framework",
-         "#1A6690", size=20, level=2)
-    edge(ctx_id, est_grp, "#5B8DB8")
+    n(est_grp, f"Estimands ({len(estimands)})", "#1A6690", 20, node_type="est_group",
+      data={"estimands": estimands})
+    e("ctx", est_grp, "#5B8DB8")
 
     meth_grp = uid("meth_grp")
-    node(meth_grp, "Statistical Methods", _methods_summary(methods),
-         "#BA5A00", size=20, level=2)
-    edge(ctx_id, meth_grp, "#E67E22")
+    n(meth_grp, "Statistical Methods", "#BA5A00", 20, node_type="methods",
+      data=methods)
+    e("ctx", meth_grp, "#E67E22")
 
     # ── Level 3: Populations ──────────────────────────────────────────────
     for p in pops[:6]:
         abbr = p.get("abbreviation") or p.get("name") or "Pop"
-        desc = p.get("description") or abbr
         pid = uid("pop")
-        node(pid, abbr, desc[:120], "#A9DFBF", size=14, level=3)
-        edge(pop_grp, pid, "#27AE60")
+        n(pid, abbr, "#A9DFBF", 14, node_type="population", data=p)
+        e(pop_grp, pid, "#27AE60")
 
     # ── Level 3: Estimands ────────────────────────────────────────────────
-    for i, e in enumerate(estimands[:5]):
-        label = (e.get("treatment_comparison") or e.get("population") or f"Estimand {i+1}")[:28]
+    for i, est in enumerate(estimands[:5]):
+        lbl = (est.get("treatment_comparison") or est.get("population") or f"Estimand {i+1}")[:26]
         eid = uid("est")
-        node(eid, label, str(e)[:200], "#AED6F1", size=14, level=3)
-        edge(est_grp, eid, "#5B8DB8")
+        n(eid, lbl, "#AED6F1", 14, node_type="estimand", data=est)
+        e(est_grp, eid, "#5B8DB8")
 
-    # ── Level 3: Methods details ──────────────────────────────────────────
-    method_items = []
+    # ── Level 3: Method details ───────────────────────────────────────────
     if isinstance(methods, dict):
-        if methods.get("primary_analysis_method"):
-            method_items.append(("Primary: " + str(methods["primary_analysis_method"])[:30],
-                                  str(methods["primary_analysis_method"])))
-        if methods.get("multiplicity_adjustment"):
-            method_items.append(("Multiplicity adj.", "Multiplicity adjustment applied"))
-        if methods.get("estimand_framework"):
-            method_items.append(("Estimand framework", "ICH E9(R1) estimand framework"))
-        if methods.get("bayesian_elements"):
-            method_items.append(("Bayesian elements", "Bayesian statistical elements"))
-        if methods.get("missing_data_handling"):
-            method_items.append((f"Missing data: {str(methods['missing_data_handling'])[:25]}",
-                                  str(methods["missing_data_handling"])))
-    for label, title in method_items[:5]:
-        mid = uid("meth")
-        node(mid, label, title, "#FDEBD0", size=13, level=3)
-        edge(meth_grp, mid, "#E67E22")
+        mdetails = [
+            ("primary_analysis_method", "Primary method"),
+            ("multiplicity_adjustment", "Multiplicity adj."),
+            ("estimand_framework",      "Estimand framework"),
+            ("bayesian_elements",       "Bayesian elements"),
+            ("missing_data_handling",   "Missing data"),
+        ]
+        for key, label in mdetails:
+            val = methods.get(key)
+            if val and val is not False:
+                mid = uid("meth")
+                short = str(val)[:24] if isinstance(val, str) else label
+                n(mid, short, "#FDEBD0", 12, node_type="method_detail",
+                  data={"field": label, "value": str(val)})
+                e(meth_grp, mid, "#E67E22")
 
-    # ── Level 2 under Analysis Plan ───────────────────────────────────────
-    primary_grp = uid("primary_grp")
-    node(primary_grp, f"Primary Endpoints ({len(eps_primary)})", "Primary efficacy endpoints",
-         "#7D6608", size=20, level=2)
-    edge(plan_id, primary_grp, "#F0A500")
+    # ── Level 2: Analysis Plan ────────────────────────────────────────────
+    prim_grp = uid("prim_grp")
+    n(prim_grp, f"Primary ({len(eps_prim)})", "#7D6608", 22, node_type="ep_group",
+      data={"endpoints": eps_prim, "tier": "Primary"})
+    e("plan", prim_grp, "#F0A500")
 
-    secondary_grp = uid("secondary_grp")
-    node(secondary_grp, f"Secondary Endpoints ({len(eps_secondary)})", "Secondary endpoints",
-         "#5D6D7E", size=18, level=2)
-    edge(plan_id, secondary_grp, "#AAB7B8")
+    sec_grp = uid("sec_grp")
+    n(sec_grp, f"Secondary ({len(eps_sec)})", "#5D6D7E", 18, node_type="ep_group",
+      data={"endpoints": eps_sec, "tier": "Secondary"})
+    e("plan", sec_grp, "#AAB7B8")
 
-    # ── Levels 3–5: Endpoint → ADaM → SDTM lineage ───────────────────────
-    def _add_endpoint_lineage(ep: dict, parent_id: str, ep_idx: int, ep_color: str):
-        ep_type = ep.get("type") or f"Endpoint {ep_idx+1}"
-        ep_desc = ep.get("description") or ep_type
-        short = ep_type[:28]
+    # ── Levels 3-5: Endpoint → ADaM → SDTM ───────────────────────────────
+    def add_ep_lineage(ep, parent_id, ep_color):
+        ep_type = ep.get("type") or "Endpoint"
         ep_id = uid("ep")
-        node(ep_id, short, ep_desc[:200], ep_color, size=16, level=3)
-        edge(parent_id, ep_id, ep_color)
+        n(ep_id, ep_type[:26], ep_color, 16, node_type="endpoint", data=ep)
+        e(parent_id, ep_id, ep_color)
 
-        # Level 4: ADaM datasets
-        matched_adams = _match_adam_for_endpoint(ep, adam_names)
-        if not matched_adams:
-            matched_adams = adam_names[:1]  # at minimum show ADSL fallback
-        for adam_name in matched_adams:
-            adam_id = uid(f"adam_{adam_name}")
-            # Find rationale from schema
+        for adam_name in (_match_adam_for_endpoint(ep, adam_names) or adam_names[:1]):
             adam_rat = next(
                 ((d.get("rationale") or "") for d in adam_list
-                 if isinstance(d, dict) and (d.get("dataset") or "") == adam_name),
-                adam_name
-            )
-            node(adam_id, adam_name, f"{adam_name}: {adam_rat[:120]}", "#8E44AD", size=18, level=4)
-            edge(ep_id, adam_id, "#8E44AD")
+                 if isinstance(d, dict) and d.get("dataset") == adam_name), "")
+            a_id = uid(f"adam")
+            n(a_id, adam_name, "#8E44AD", 18, node_type="adam",
+              data={"dataset": adam_name, "rationale": adam_rat,
+                    "endpoint_type": ep_type,
+                    "sdtm_sources": _ADAM_TO_SDTM.get(adam_name, [])})
+            e(ep_id, a_id, "#8E44AD")
 
-            # Level 5: SDTM source domains
-            sdtm_sources = [s for s in _ADAM_TO_SDTM.get(adam_name, []) if s in sdtm_names]
-            if not sdtm_sources:
-                sdtm_sources = _ADAM_TO_SDTM.get(adam_name, [])[:3]
-            for sdtm_name in sdtm_sources[:4]:
-                sdtm_id = uid(f"sdtm_{sdtm_name}")
+            for sdtm_name in [s for s in _ADAM_TO_SDTM.get(adam_name, []) if s in sdtm_names][:4]:
                 sdtm_rat = next(
                     ((d.get("rationale") or "") for d in sdtm_list
-                     if isinstance(d, dict) and (d.get("domain") or "") == sdtm_name),
-                    sdtm_name
-                )
-                node(sdtm_id, sdtm_name, f"{sdtm_name}: {sdtm_rat[:120]}", "#D7BDE2", size=14, level=5)
-                edge(adam_id, sdtm_id, "#C0A0D8", dashes=True)
+                     if isinstance(d, dict) and d.get("domain") == sdtm_name), "")
+                s_id = uid("sdtm")
+                n(s_id, sdtm_name, "#D7BDE2", 14, node_type="sdtm",
+                  data={"domain": sdtm_name, "rationale": sdtm_rat,
+                        "adam_parent": adam_name})
+                e(a_id, s_id, "#C0A0D8", dashes=True)
 
-    for i, ep in enumerate(eps_primary[:4]):
-        _add_endpoint_lineage(ep, primary_grp, i, "#F0A500")
-    for i, ep in enumerate(eps_secondary[:3]):
-        _add_endpoint_lineage(ep, secondary_grp, i, "#AAB7B8")
+    for ep in eps_prim[:4]:
+        add_ep_lineage(ep, prim_grp, "#F0A500")
+    for ep in eps_sec[:3]:
+        add_ep_lineage(ep, sec_grp, "#AAB7B8")
 
-    # ── Level 2–3: Open Questions ─────────────────────────────────────────
-    high_qs = [q for q in open_qs if (q.get("severity") or "").upper() == "HIGH"]
+    # ── Open Questions ────────────────────────────────────────────────────
+    high_qs  = [q for q in open_qs if (q.get("severity") or "").upper() == "HIGH"]
     other_qs = [q for q in open_qs if (q.get("severity") or "").upper() != "HIGH"]
 
     if high_qs:
-        high_grp = uid("high_grp")
-        node(high_grp, f"HIGH ({len(high_qs)})", "High-severity open questions requiring immediate attention",
-             "#922B21", size=18, level=2)
-        edge(oq_id, high_grp, "#E74C3C")
+        hg = uid("high_grp")
+        n(hg, f"HIGH ({len(high_qs)})", "#922B21", 18, node_type="oq_group",
+          data={"questions": high_qs, "severity": "HIGH"})
+        e("oq", hg, "#E74C3C")
         for q in high_qs[:4]:
             qid = uid("oq_h")
-            label = (q.get("question") or q.get("topic") or "Open Q")[:32]
-            node(qid, label, (q.get("question") or "")[:200], "#F1948A", size=12, level=3)
-            edge(high_grp, qid, "#E74C3C")
+            lbl = (q.get("category") or "Question")[:26]
+            n(qid, lbl, "#F1948A", 12, node_type="open_question", data=q)
+            e(hg, qid, "#E74C3C")
 
     if other_qs:
-        other_grp = uid("other_grp")
-        node(other_grp, f"MEDIUM/LOW ({len(other_qs)})", "Lower-severity open questions",
-             "#5D6D7E", size=16, level=2)
-        edge(oq_id, other_grp, "#AAB7B8")
+        og = uid("other_grp")
+        n(og, f"MED/LOW ({len(other_qs)})", "#5D6D7E", 16, node_type="oq_group",
+          data={"questions": other_qs, "severity": "MEDIUM/LOW"})
+        e("oq", og, "#AAB7B8")
         for q in other_qs[:3]:
             qid = uid("oq_m")
-            label = (q.get("question") or q.get("topic") or "Open Q")[:32]
-            node(qid, label, (q.get("question") or "")[:200], "#CCD1D1", size=11, level=3)
-            edge(other_grp, qid, "#AAB7B8")
+            lbl = (q.get("category") or "Question")[:26]
+            n(qid, lbl, "#CCD1D1", 11, node_type="open_question", data=q)
+            e(og, qid, "#AAB7B8")
 
-    # ── Pyvis options ─────────────────────────────────────────────────────
-    net.set_options(_json.dumps({
-        "layout": {
-            "hierarchical": {
-                "enabled": True,
-                "direction": "LR",
-                "sortMethod": "directed",
-                "levelSeparation": 200,
-                "nodeSpacing": 90,
-                "treeSpacing": 140,
-                "blockShifting": True,
-                "edgeMinimization": True,
-                "parentCentralization": True,
-            }
-        },
-        "physics": {"enabled": False},
-        "interaction": {
-            "dragNodes": True,
-            "dragView": True,
-            "zoomView": True,
-            "navigationButtons": True,
-            "tooltipDelay": 80,
-            "hover": True,
-        },
-        "edges": {
-            "smooth": {"type": "cubicBezier", "forceDirection": "horizontal", "roundness": 0.5},
-            "color": {"inherit": False},
-        },
-        "nodes": {
-            "borderWidth": 1,
-            "shadow": {"enabled": True, "size": 6, "x": 2, "y": 2},
-        },
-    }))
+    return nodes, edges, registry
 
-    # Generate HTML and inject collapse-on-click JS
-    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
-        fpath = f.name
-    net.save_graph(fpath)
-    html = open(fpath, encoding="utf-8").read()
-    os.unlink(fpath)
 
-    collapse_js = """
-<script>
-(function() {
-  function waitForNetwork(cb) {
-    if (typeof network !== 'undefined') { cb(); }
-    else { setTimeout(function(){ waitForNetwork(cb); }, 100); }
-  }
-  waitForNetwork(function() {
-    var childMap = {};
-    edges.get().forEach(function(e) {
-      if (!childMap[e.from]) childMap[e.from] = [];
-      childMap[e.from].push(e.to);
-    });
+def _render_node_detail(node_id: str, registry: dict, schema: dict):
+    """Render a detailed drill-down panel for the clicked node."""
+    info = registry.get(node_id)
+    if not info:
+        return
 
-    var collapsed = {};
+    ntype = info["type"]
+    data  = info["data"]
+    label = info["label"]
 
-    function getDesc(id) {
-      var desc = [], queue = (childMap[id] || []).slice();
-      while (queue.length) {
-        var n = queue.shift(); desc.push(n);
-        (childMap[n] || []).forEach(function(c){ queue.push(c); });
-      }
-      return desc;
-    }
+    st.markdown(
+        f'<div style="background:#1C2B3A;border-left:4px solid #3A9BDC;'
+        f'padding:14px 20px;border-radius:6px;margin-top:8px;">'
+        f'<span style="color:#7EC8E3;font-size:0.75rem;text-transform:uppercase;'
+        f'letter-spacing:.08em;">{ntype.replace("_"," ")}</span>'
+        f'<h4 style="color:#FFFFFF;margin:4px 0 0;">{label}</h4></div>',
+        unsafe_allow_html=True,
+    )
+    st.write("")
 
-    network.on('click', function(params) {
-      if (!params.nodes.length) return;
-      var nid = params.nodes[0];
-      if (!(childMap[nid] && childMap[nid].length)) return;
-      collapsed[nid] = !collapsed[nid];
-      var desc = getDesc(nid);
-      var hide = !!collapsed[nid];
-      var nodeUpdates = desc.map(function(d){ return {id: d, hidden: hide}; });
-      nodes.update(nodeUpdates);
-      var edgeUpdates = [];
-      edges.get().forEach(function(e){
-        if (desc.indexOf(e.from) >= 0 || desc.indexOf(e.to) >= 0)
-          edgeUpdates.push({id: e.id, hidden: hide});
-      });
-      edges.update(edgeUpdates);
-      // Visual indicator on the parent node
-      var n = nodes.get(nid);
-      var lbl = (n.label || '').replace(/ [\\[\\+\\-\\]]+$/, '');
-      nodes.update([{id: nid, label: lbl + (hide ? ' [+]' : '')}]);
-    });
+    if ntype == "study":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**Title:** {data.get('study_title') or '—'}")
+            st.markdown(f"**NCT ID:** {data.get('nct_id') or '—'}")
+            st.markdown(f"**Sponsor:** {data.get('sponsor') or '—'}")
+        with col2:
+            st.markdown(f"**Phase:** {data.get('phase') or '—'}")
+            st.markdown(f"**Therapeutic Area:** {data.get('therapeutic_area') or '—'}")
+            st.markdown(f"**Indication:** {data.get('indication') or '—'}")
 
-    // Legend hint
-    var hint = document.createElement('div');
-    hint.style.cssText = 'position:absolute;bottom:8px;left:12px;color:#8899AA;font-size:11px;pointer-events:none;';
-    hint.innerText = 'Click any node with children to collapse/expand  •  Scroll to zoom  •  Drag to pan';
-    document.getElementById('mynetwork').style.position = 'relative';
-    document.getElementById('mynetwork').appendChild(hint);
-  });
-})();
-</script>"""
+    elif ntype == "population":
+        st.markdown(f"**Abbreviation:** {data.get('abbreviation') or data.get('name') or '—'}")
+        st.markdown(f"**Full Name:** {data.get('name') or '—'}")
+        if data.get("description"):
+            st.markdown(f"**Definition:** {data['description']}")
+        if data.get("sap_section"):
+            st.caption(f"SAP Section: {data['sap_section']}")
 
-    html = html.replace("</body>", collapse_js + "\n</body>")
-    return html
+    elif ntype == "estimand":
+        for field, label_txt in [
+            ("population", "Population"),
+            ("treatment_comparison", "Treatment Comparison"),
+            ("variable", "Variable / Endpoint"),
+            ("intercurrent_events", "Intercurrent Events Strategy"),
+            ("population_level_summary", "Summary Measure"),
+        ]:
+            if data.get(field):
+                st.markdown(f"**{label_txt}:** {data[field]}")
+
+    elif ntype == "methods":
+        for field, label_txt in [
+            ("primary_analysis_method", "Primary Method"),
+            ("covariates", "Covariates"),
+            ("visit_windowing", "Visit Windowing"),
+            ("missing_data_handling", "Missing Data"),
+            ("multiplicity_adjustment", "Multiplicity Adjustment"),
+            ("estimand_framework", "Estimand Framework"),
+            ("bayesian_elements", "Bayesian Elements"),
+        ]:
+            val = data.get(field)
+            if val is not None and val is not False:
+                st.markdown(f"**{label_txt}:** {val}")
+
+    elif ntype == "method_detail":
+        st.markdown(f"**{data.get('field','Field')}:** {data.get('value','—')}")
+
+    elif ntype == "endpoint":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**Type:** {data.get('type') or '—'}")
+            st.markdown(f"**Timepoint:** {data.get('timepoint') or '—'}")
+        with col2:
+            matched = _match_adam_for_endpoint(
+                data,
+                [(d.get("dataset") or str(d)) if isinstance(d, dict) else str(d)
+                 for d in (schema.get("adam_datasets_expected") or [])]
+            )
+            st.markdown(f"**Recommended ADaM:** {', '.join(matched) or '—'}")
+        if data.get("description"):
+            st.markdown(f"**Description:** {data['description']}")
+        if data.get("sap_section"):
+            st.caption(f"SAP Section: {data['sap_section']}")
+
+    elif ntype == "adam":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**Dataset:** {data.get('dataset','—')}")
+            st.markdown(f"**Drives endpoint:** {data.get('endpoint_type','—')}")
+        with col2:
+            sdtm_src = data.get("sdtm_sources") or []
+            st.markdown(f"**SDTM Sources:** {', '.join(sdtm_src) or '—'}")
+        if data.get("rationale"):
+            st.markdown(f"**Rationale:** {data['rationale']}")
+        conf = (schema.get("component_confidence") or {}).get(data.get("dataset",""))
+        if conf is not None:
+            st.markdown(f"**Confidence:** {get_confidence_label(conf)}")
+
+    elif ntype == "sdtm":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**Domain:** {data.get('domain','—')}")
+            st.markdown(f"**Feeds into:** {data.get('adam_parent','—')}")
+        with col2:
+            st.markdown(f"**Standard:** SDTM IG v3.4")
+        if data.get("rationale"):
+            st.markdown(f"**Rationale:** {data['rationale']}")
+
+    elif ntype == "open_question":
+        sev = data.get("severity", "MEDIUM")
+        color, _ = _SEVERITY_COLORS.get(sev, ("#616161", "#F5F5F5"))
+        st.markdown(
+            f'{_severity_badge(sev)} **{data.get("category","Question")}**',
+            unsafe_allow_html=True,
+        )
+        st.markdown(f"> {data.get('question','')}")
+        if data.get("sap_section"):
+            st.caption(f"SAP Section: {data['sap_section']}")
+        if data.get("sap_excerpt"):
+            with st.expander("SAP excerpt", expanded=True):
+                st.markdown(
+                    f'<div style="font-size:0.85rem;font-family:Georgia,serif;'
+                    f'line-height:1.6;color:#444;">{data["sap_excerpt"]}</div>',
+                    unsafe_allow_html=True,
+                )
+
+    elif ntype in ("group", "pop_group", "est_group", "ep_group", "oq_group"):
+        # Summary card for a group node
+        if "populations" in data:
+            for p in data["populations"][:5]:
+                abbr = p.get("abbreviation") or p.get("name") or "—"
+                st.markdown(f"- **{abbr}** — {(p.get('description') or '')[:80]}")
+        if "endpoints" in data:
+            tier = data.get("tier", "")
+            for ep in data["endpoints"][:5]:
+                st.markdown(f"- **{ep.get('type','?')}** — {(ep.get('description') or '')[:80]}")
+        if "estimands" in data:
+            for est in data["estimands"][:4]:
+                st.markdown(f"- {est.get('treatment_comparison') or est.get('population') or '—'}")
+        if "questions" in data:
+            for q in data["questions"][:5]:
+                sev = q.get("severity","?")
+                st.markdown(f"- {_severity_badge(sev)} {q.get('question','')[:80]}",
+                            unsafe_allow_html=True)
 
 
 def _tab_knowledge_model(schema: dict):
-    import streamlit.components.v1 as components
+    from streamlit_agraph import agraph, Config
 
     st.header("Study Knowledge Model")
     st.caption(
         "5-level CDISC lineage: Study → Context / Analysis Plan → "
         "Endpoints → ADaM Datasets → SDTM Source Domains. "
-        "Click any node to collapse/expand its subtree."
+        "**Click any node** to see its details below the graph."
     )
 
-    meta = schema.get("metadata", {})
-    pops = schema.get("analysis_populations") or []
-    sdtm_list = schema.get("sdtm_domains_expected") or []
-    adam_list = schema.get("adam_datasets_expected") or []
-    eps_primary = (schema.get("endpoints", {}).get("primary") or [])
-
     try:
-        html = _build_knowledge_graph_html(schema)
-        components.html(html, height=740, scrolling=False)
+        nodes, edges, registry = _build_knowledge_graph(schema)
     except Exception as exc:
-        st.error(f"Could not render knowledge graph: {exc}")
+        st.error(f"Could not build knowledge graph: {exc}")
+        return
 
-    # ── Structured details below graph ────────────────────────────────────
-    st.divider()
-    st.subheader("Structured Representation")
-    col1, col2 = st.columns(2)
+    config = Config(
+        width="100%",
+        height=700,
+        directed=True,
+        physics=False,
+        hierarchical=True,
+        hierarchical_sort_method="directed",
+        direction="LR",
+        levelSeparation=210,
+        nodeSpacing=85,
+        treeSpacing=130,
+        blockShifting=True,
+        edgeMinimization=True,
+        parentCentralization=True,
+        node={"labelProperty": "label"},
+        link={"renderLabel": False},
+    )
 
-    with col1:
-        st.markdown("**Study**")
-        st.markdown(f"- Title: {meta.get('study_title') or '—'}")
-        st.markdown(f"- Phase: {meta.get('phase') or '—'}")
-        st.markdown(f"- TA: {meta.get('therapeutic_area') or '—'}")
+    clicked = agraph(nodes=nodes, edges=edges, config=config)
 
-        if pops:
-            st.markdown("**Populations**")
-            for p in pops:
-                abbr = p.get("abbreviation") or p.get("name") or "—"
-                desc = p.get("description") or ""
-                st.markdown(f"- **{abbr}** — {desc[:80]}")
-
-        if eps_primary:
-            st.markdown("**Primary Endpoint**")
-            for e in eps_primary[:2]:
-                st.markdown(f"- {e.get('type','')}: {e.get('description','')[:100]}")
-
-    with col2:
-        if sdtm_list:
-            st.markdown("**SDTM Domains**")
-            for d in sdtm_list:
-                dom = (d.get("domain") or str(d)) if isinstance(d, dict) else str(d)
-                rat = (d.get("rationale") or "") if isinstance(d, dict) else ""
-                st.markdown(f"- **{dom}** — {rat[:80]}")
-
-        if adam_list:
-            st.markdown("**ADaM Datasets**")
-            for d in adam_list:
-                ds = (d.get("dataset") or str(d)) if isinstance(d, dict) else str(d)
-                rat = (d.get("rationale") or "") if isinstance(d, dict) else ""
-                st.markdown(f"- **{ds}** — {rat[:80]}")
+    # ── Drill-down panel ──────────────────────────────────────────────────
+    if clicked:
+        st.divider()
+        _render_node_detail(clicked, registry, schema)
+    else:
+        st.caption("↑ Click any node in the graph to inspect its details here.")
 
 
 # ---------------------------------------------------------------------------
