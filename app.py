@@ -1079,16 +1079,32 @@ gaps in the SAP that must be clarified before CDISC implementation can proceed.<
         sap_section = raw.get("sap_section") or ""
         sap_excerpt_stored = raw.get("sap_excerpt") or ""
 
+        # Detect if this question was raised because text was unavailable (truncation)
+        _truncation_phrases = [
+            "not provided in available text", "not found in available text",
+            "not specified in available text", "not available in the text",
+            "details not provided", "referenced but", "not in the available",
+            "not present in available", "cannot be determined from",
+        ]
+        excerpt_lower = (sap_excerpt_stored or "").lower()
+        may_be_truncation = any(p in excerpt_lower for p in _truncation_phrases)
+
         section_html = (
             f'<span style="font-size:0.75rem;color:#888;margin-left:8px;">'
             f'📄 {sap_section}</span>' if sap_section else ""
         )
+        trunc_html = (
+            '<span style="font-size:0.72rem;color:#E65100;margin-left:8px;" '
+            'title="AI flagged this because text was unavailable — may be a document '
+            'truncation artifact rather than a real SAP gap. Verify in SAP Text tab.">'
+            '⚠️ may be truncation artifact</span>'
+        ) if may_be_truncation else ""
 
         st.markdown(
             f"""<div style="background:{bg};border-left:4px solid {border};
 padding:12px 18px;border-radius:4px;margin-bottom:6px;">
 {_severity_badge(sev)}&nbsp;&nbsp;<span style="font-size:0.8rem;color:#555;">{cat}</span>
-{section_html}<br/>
+{section_html}{trunc_html}<br/>
 <span style="margin-top:6px;display:block;font-weight:500;">{question}</span>
 </div>""",
             unsafe_allow_html=True,
@@ -1203,6 +1219,141 @@ def _tab_sap_text(schema: dict):
                 f'line-height:1.7;color:#333;white-space:pre-wrap;">{chunk}</div>',
                 unsafe_allow_html=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# Tab: Ask AI
+# ---------------------------------------------------------------------------
+
+def _tab_ask_ai(schema: dict):
+    import anthropic as _anthropic
+
+    st.header("Ask AI")
+    st.caption(
+        "Ask open-ended questions about this SAP. "
+        "The AI has access to the full extracted schema and SAP text."
+    )
+
+    meta = schema.get("metadata", {})
+    nct_id = meta.get("nct_id", "")
+    sap_text = _load_sap_text(schema)
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        st.warning(
+            "ANTHROPIC_API_KEY not configured — Ask AI is unavailable. "
+            "Set the key in Streamlit secrets.",
+            icon="⚠️",
+        )
+        return
+
+    # ── Build persistent context ──────────────────────────────────────────
+    # Compact schema summary to keep context lean
+    schema_summary = json.dumps({
+        "metadata": meta,
+        "analysis_populations": schema.get("analysis_populations", []),
+        "endpoints": schema.get("endpoints", {}),
+        "statistical_methods": schema.get("statistical_methods", {}),
+        "estimands": schema.get("estimands", []),
+        "special_assessments": schema.get("special_assessments", {}),
+        "sdtm_domains_expected": schema.get("sdtm_domains_expected", []),
+        "adam_datasets_expected": schema.get("adam_datasets_expected", []),
+        "open_questions": schema.get("open_questions", []),
+        "extraction_confidence": schema.get("extraction_confidence", ""),
+        "extraction_notes": schema.get("extraction_notes", ""),
+    }, indent=2)
+
+    # SAP text: use up to 80k chars — enough for full context without excess cost
+    sap_context = ""
+    if sap_text:
+        sap_context = (
+            f"\n\n--- EXTRACTED SAP TEXT (first 80,000 chars) ---\n"
+            + sap_text[:80_000]
+            + ("\n[... truncated for context ...]" if len(sap_text) > 80_000 else "")
+        )
+
+    system_prompt = f"""You are an expert CDISC biostatistics and clinical data standards advisor.
+You are answering questions about a specific clinical study based on its extracted SAP schema and text.
+
+STUDY: {meta.get('study_title', nct_id)}
+NCT ID: {nct_id}
+
+EXTRACTED SCHEMA:
+{schema_summary}
+{sap_context}
+
+Guidelines:
+- Answer based on the SAP content above. Cite SAP sections when relevant.
+- If the answer is not in the provided text, say so clearly — do not hallucinate.
+- Flag if the question relates to something that may have been truncated from the SAP.
+- Be concise but thorough. Use bullet points for lists.
+- When discussing CDISC standards, reference SDTM IG v3.4 or ADaM IG v2.1 as appropriate."""
+
+    # ── Chat history in session_state (keyed per study) ───────────────────
+    history_key = f"ask_ai_history_{nct_id}"
+    if history_key not in st.session_state:
+        st.session_state[history_key] = []
+
+    history: list[dict] = st.session_state[history_key]
+
+    # Suggested questions
+    if not history:
+        st.markdown("**Suggested questions:**")
+        suggestions = [
+            f"What is the primary analysis method and why?",
+            f"Are there any gaps in the randomization specification?",
+            f"Which SDTM domains are driven by the primary endpoint?",
+            f"What open questions should be resolved before programming?",
+            f"Is the missing data handling approach adequate?",
+        ]
+        cols = st.columns(2)
+        for i, s in enumerate(suggestions):
+            if cols[i % 2].button(s, key=f"suggest_{i}"):
+                st.session_state[f"ask_ai_prefill_{nct_id}"] = s
+                st.rerun()
+
+    # Display conversation history
+    for msg in history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Pre-fill from suggestion buttons
+    prefill = st.session_state.pop(f"ask_ai_prefill_{nct_id}", "")
+
+    # Chat input
+    user_input = st.chat_input("Ask anything about this SAP…", key=f"ask_ai_input_{nct_id}")
+    if prefill and not user_input:
+        user_input = prefill
+
+    if user_input:
+        history.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                try:
+                    client = _anthropic.Anthropic(api_key=api_key)
+                    response = client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=1500,
+                        system=system_prompt,
+                        messages=[
+                            {"role": m["role"], "content": m["content"]}
+                            for m in history
+                        ],
+                    )
+                    answer = response.content[0].text
+                except Exception as exc:
+                    answer = f"❌ API error: {exc}"
+
+            st.markdown(answer)
+            history.append({"role": "assistant", "content": answer})
+
+    if history:
+        if st.button("Clear conversation", key=f"clear_history_{nct_id}"):
+            st.session_state[history_key] = []
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1844,6 +1995,7 @@ def main():
         "ADaM Mapping",
         "Open Questions",
         "SAP Text",
+        "Ask AI",
         "Export",
         "Pipeline",
     ])
@@ -1853,12 +2005,12 @@ def main():
 
     schema = st.session_state.get("schema")
 
-    # Pipeline tab always available (index 8)
-    with tabs[8]:
+    # Pipeline tab always available (index 9)
+    with tabs[9]:
         _tab_pipeline()
 
     if schema is None:
-        for tab in tabs[1:8]:
+        for tab in tabs[1:9]:
             with tab:
                 st.info(
                     "No SAP loaded. Use the **Input** tab to upload a PDF or look up a study.",
@@ -1885,6 +2037,9 @@ def main():
         _tab_sap_text(schema)
 
     with tabs[7]:
+        _tab_ask_ai(schema)
+
+    with tabs[8]:
         _tab_export(schema)
 
 

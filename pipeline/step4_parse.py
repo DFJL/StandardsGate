@@ -53,22 +53,24 @@ def _load_prompt_template(prompt_file: str) -> str:
 
 def _truncate_text(text: str, max_chars: int = MAX_TEXT_CHARS) -> str:
     """
-    Truncate text to max_chars if necessary.
+    Smart truncation for extremely long documents (safety cap at 400k chars).
 
-    Hard safety cap for extremely long documents (>400k chars / ~100k tokens).
-    Combined protocol+SAP documents can be long and have statistical sections
-    near the end — the limit is intentionally high to avoid cutting those sections.
-    We add a notice so Claude knows the document was truncated.
+    Uses a head+tail strategy: send the first 300k chars (front matter, design,
+    endpoints, populations) AND the last 80k chars (statistical sections that
+    often appear late in combined protocol+SAP documents).  A gap notice is
+    inserted between the two segments so Claude knows content was omitted.
     """
     if len(text) <= max_chars:
         return text
 
-    truncated = text[:max_chars]
+    head = 300_000
+    tail = 80_000
+
     notice = (
-        "\n\n[NOTE: SAP text was truncated at this point due to length. "
-        "Extract what is available from the text above.]\n"
+        f"\n\n[NOTE: Document was too long ({len(text):,} chars). "
+        f"Middle section omitted. Showing first {head:,} chars and last {tail:,} chars.]\n\n"
     )
-    return truncated + notice
+    return text[:head] + notice + text[-tail:]
 
 
 def _build_prompt(template: str, sap_text: str) -> str:
