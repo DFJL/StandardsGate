@@ -397,7 +397,8 @@ def _build_knowledge_graph(schema: dict) -> tuple:
             id=nid, label=label, size=size, shape=shape,
             color={"background": color, "border": "#ffffff",
                    "highlight": {"background": "#FFD700", "border": "#FFA500"}},
-            font={"size": 11, "color": "#ffffff", "face": "Inter,sans-serif"},
+            font={"size": 13, "color": "#ffffff", "face": "Inter,sans-serif",
+                  "strokeWidth": 2, "strokeColor": "#000000"},
         ))
         registry[nid] = {"type": node_type, "label": label, "data": data or {}}
 
@@ -712,14 +713,16 @@ def _tab_knowledge_model(schema: dict):
         hierarchical=True,
         hierarchical_sort_method="directed",
         direction="LR",
-        levelSeparation=210,
-        nodeSpacing=85,
-        treeSpacing=130,
+        levelSeparation=220,
+        nodeSpacing=90,
+        treeSpacing=140,
         blockShifting=True,
         edgeMinimization=True,
         parentCentralization=True,
-        node={"labelProperty": "label"},
+        node={"labelProperty": "label", "font": {"size": 13, "color": "#ffffff",
+              "strokeWidth": 2, "strokeColor": "#000000"}},
         link={"renderLabel": False},
+        backgroundColor="#111C27",
     )
 
     clicked = agraph(nodes=nodes, edges=edges, config=config)
