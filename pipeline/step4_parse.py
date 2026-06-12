@@ -34,7 +34,7 @@ import logging
 # first N characters which typically cover study design, populations, and
 # primary endpoints — the most critical sections for CDISC planning.
 # ~120,000 chars ≈ ~30,000 tokens, well within claude-sonnet context window.
-MAX_TEXT_CHARS = 120_000
+MAX_TEXT_CHARS = 400_000  # ~100k tokens — well within Claude's 200k context window
 
 
 def _load_prompt_template(prompt_file: str) -> str:
@@ -55,8 +55,9 @@ def _truncate_text(text: str, max_chars: int = MAX_TEXT_CHARS) -> str:
     """
     Truncate text to max_chars if necessary.
 
-    Clinical SAPs front-load critical content (objectives, endpoints, populations,
-    statistical methods), so truncating the tail is a reasonable trade-off.
+    Hard safety cap for extremely long documents (>400k chars / ~100k tokens).
+    Combined protocol+SAP documents can be long and have statistical sections
+    near the end — the limit is intentionally high to avoid cutting those sections.
     We add a notice so Claude knows the document was truncated.
     """
     if len(text) <= max_chars:
