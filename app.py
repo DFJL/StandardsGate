@@ -1,9 +1,9 @@
 """
-Standards Gate — Component 2: AI Copilot UI
+Study Standards Lens — AI-Assisted SAP Review UI
 
-A Streamlit review tool for CDISC SDTM/ADaM mapping recommendations derived
-from Statistical Analysis Plans. This is an AI copilot, not an auto-generator.
-All findings are presented as recommendations that require human review.
+An AI copilot for reviewing SAP completeness and CDISC alignment across the
+study lifecycle — from first draft through amendment. All outputs are
+recommendations that require human review and sign-off.
 """
 
 import copy
@@ -28,7 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 # Page configuration (must be first Streamlit call)
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Standards Gate — CDISC Mapping Copilot",
+    page_title="Study Standards Lens — SAP Completeness & CDISC Alignment",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -122,8 +122,8 @@ def _adam_score_badge(score) -> str:
 
 def _render_sidebar():
     with st.sidebar:
-        st.markdown("### 🔬 Standards Gate")
-        st.caption("CDISC Mapping Copilot · v1.0")
+        st.markdown("### 🔬 Study Standards Lens")
+        st.caption("AI-Assisted SAP Review · CDISC Alignment")
         st.divider()
 
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -131,7 +131,7 @@ def _render_sidebar():
             st.success("API key detected", icon="✅")
         else:
             st.warning(
-                "ANTHROPIC_API_KEY not set. PDF upload requires this key.",
+                "ANTHROPIC_API_KEY not set. PDF analysis requires this key.",
                 icon="⚠️",
             )
 
@@ -144,8 +144,9 @@ def _render_sidebar():
 - CDISC Library
 
 **Disclaimer**
-All outputs are *recommendations* and require validation by a qualified CDISC
-programmer or biostatistician before use in study setup.
+All outputs are *recommendations* — not decisions. Each item requires
+review by a qualified CDISC programmer or biostatistician before
+programming begins.
             """
         )
         st.divider()
@@ -159,14 +160,14 @@ programmer or biostatistician before use in study setup.
 def _tab_input():
     st.header("SAP Input")
     st.markdown(
-        "Upload a Statistical Analysis Plan PDF **or** look up a study by NCT ID "
-        "if it has already been processed by the pipeline."
+        "Upload a Statistical Analysis Plan PDF **or** look up a study already in the knowledge base. "
+        "Works at any point in the SAP lifecycle — initial draft, final version, or post-amendment."
     )
 
     col_upload, col_lookup = st.columns([1, 1], gap="large")
 
     with col_upload:
-        st.subheader("Upload SAP PDF")
+        st.subheader("Analyse a New SAP")
         uploaded_file = st.file_uploader(
             "Select a PDF file (max 50 MB)",
             type=["pdf"],
@@ -180,7 +181,7 @@ def _tab_input():
                 )
             else:
                 with st.spinner(
-                    "Extracting text and running AI-assisted SAP analysis — "
+                    "Extracting SAP content and running AI-assisted completeness and alignment check — "
                     "this may take 30–90 seconds…"
                 ):
                     try:
@@ -188,8 +189,7 @@ def _tab_input():
                         st.session_state["schema"] = schema
                         st.session_state["source"] = uploaded_file.name
                         st.success(
-                            f"SAP processed successfully. Switch to the tabs above "
-                            f"to review recommendations.",
+                            "SAP analysis complete. Review the recommendations and flagged items in the tabs above.",
                             icon="✅",
                         )
                     except RuntimeError as exc:
@@ -198,7 +198,7 @@ def _tab_input():
                         st.error(f"Unexpected error: {exc}")
 
     with col_lookup:
-        st.subheader("Look Up from Knowledge Base")
+        st.subheader("Load from Knowledge Base")
 
         # Build dropdown options from KB
         _kb_df = _load_master_index(CONFIG)
@@ -220,7 +220,7 @@ def _tab_input():
             )
             nct_id_input = _nct_map.get(selected_label, "").strip() if selected_label != "— select —" else ""
         else:
-            st.info("No studies in the knowledge base yet. Run the pipeline first.")
+            st.info("No studies in the knowledge base yet. Process a SAP above or run the pipeline.")
             nct_id_input = st.text_input("Or enter NCT ID manually", placeholder="e.g. NCT01234567")
 
         if st.button("Load from Knowledge Base", type="primary", disabled=not nct_id_input):
@@ -230,7 +230,7 @@ def _tab_input():
                     schema = lookup_from_index(nct_id, CONFIG)
                     st.session_state["schema"] = schema
                     st.session_state["source"] = nct_id
-                    st.success(f"Schema loaded for {nct_id}. Switch to the tabs above to review.", icon="✅")
+                    st.success(f"{nct_id} loaded. Review alignment recommendations and flagged items in the tabs above.", icon="✅")
                 except FileNotFoundError as exc:
                     st.warning(str(exc))
                 except Exception as exc:
@@ -243,7 +243,7 @@ def _tab_input():
         extraction_conf = schema.get("extraction_confidence", "LOW")
 
         st.divider()
-        st.markdown("### Currently Loaded SAP")
+        st.markdown("### Active SAP")
 
         meta = schema.get("metadata", {})
         r1c1, r1c2, r1c3, r1c4 = st.columns(4)
@@ -276,9 +276,9 @@ def _tab_input():
                 f"""
 <div style="background:#FFEBEE;border-left:4px solid #C62828;padding:12px 18px;
 border-radius:4px;margin-top:12px;">
-<strong style="color:#C62828;">⚠ Human Review Required</strong><br/>
-<span style="color:#4A1A1A;">{high_count} HIGH severity item(s) detected that require
-immediate review before proceeding with study setup.</span>
+<strong style="color:#C62828;">⚠ Items Require Resolution Before Programming</strong><br/>
+<span style="color:#4A1A1A;">{high_count} HIGH severity gap(s) detected. Resolve these with the biostatistician
+before CDISC implementation begins — misalignments caught here are far cheaper to fix than at QC or submission.</span>
 </div>
 """,
                 unsafe_allow_html=True,
@@ -692,11 +692,11 @@ def _render_node_detail(node_id: str, registry: dict, schema: dict):
 def _tab_knowledge_model(schema: dict):
     from streamlit_agraph import agraph, Config
 
-    st.header("Study Knowledge Model")
+    st.header("SAP Knowledge Graph")
     st.caption(
-        "5-level CDISC lineage: Study → Context / Analysis Plan → "
-        "Endpoints → ADaM Datasets → SDTM Source Domains. "
-        "**Click any node** to see its details below the graph."
+        "Visual lineage from SAP through endpoints to recommended CDISC structures. "
+        "Traces the reasoning rather than presenting a flat report. "
+        "**Click any node** to inspect its details below."
     )
 
     try:
@@ -738,10 +738,10 @@ def _tab_knowledge_model(schema: dict):
 # ---------------------------------------------------------------------------
 
 def _tab_sap_summary(schema: dict):
-    st.header("Detected SAP Summary")
+    st.header("SAP Completeness Review")
     st.caption(
-        "The following information was detected by AI-assisted extraction. "
-        "Review for accuracy before use."
+        "Structured content extracted from the SAP. "
+        "Review for accuracy — this is the basis for all CDISC alignment recommendations below."
     )
 
     meta = schema.get("metadata", {})
@@ -853,10 +853,10 @@ def _tab_sap_summary(schema: dict):
 # ---------------------------------------------------------------------------
 
 def _tab_sdtm(schema: dict):
-    st.header("Recommended SDTM Domains")
+    st.header("SDTM Domain Alignment")
     st.markdown(
-        "> **Review required.** The domains below are *recommended* based on the "
-        "detected SAP content. Confirm alignment with your study protocol and SDTMIG v3.4."
+        "> **Review required.** Recommended domains are derived from SAP content analysis. "
+        "Confirm alignment with your study protocol and SDTM IG v3.4 before implementation."
     )
 
     df = schema_to_sdtm_table(schema)
@@ -905,11 +905,11 @@ def _tab_sdtm(schema: dict):
 # ---------------------------------------------------------------------------
 
 def _tab_adam(schema: dict):
-    st.header("Recommended ADaM Datasets")
+    st.header("ADaM Dataset Alignment")
     st.markdown(
-        "> **Review required.** The datasets below are *recommended* based on the "
-        "detected endpoints, populations, and special assessments. Validate against "
-        "ADaM IG v2.1 and study-specific requirements."
+        "> **Review required.** Recommended datasets are inferred from detected endpoints, "
+        "analysis populations, and special assessments. Validate against ADaM IG v2.1 "
+        "and study-specific requirements before programming."
     )
 
     df = schema_to_adam_table(schema)
@@ -1030,10 +1030,11 @@ def _tab_open_questions(schema: dict):
     oqs_df = schema_to_open_questions_df(schema)
     high_count = int((oqs_df["Severity"] == "HIGH").sum()) if not oqs_df.empty else 0
 
-    st.header("Open Questions & Flags")
+    st.header("SAP Completeness Flags")
     st.markdown(
-        "The items below represent ambiguities or missing information detected in the SAP. "
-        "Each should be reviewed and resolved with the study team **before** programming begins."
+        "Ambiguities, gaps, and missing specifications detected in the SAP. "
+        "Each item should be reviewed and resolved with the study team **before** "
+        "CDISC implementation begins — unresolved flags increase rework risk."
     )
 
     if high_count:
@@ -1364,10 +1365,11 @@ Guidelines:
 # ---------------------------------------------------------------------------
 
 def _tab_export(schema: dict):
-    st.header("Export Mapping Package")
+    st.header("Export Standards Package")
     st.markdown(
-        "Download the full CDISC mapping recommendations for use in study setup, "
-        "specification authoring, and handoff to the programming team."
+        "Download the CDISC alignment package for use in study setup, "
+        "specification authoring, and handoff to the programming team. "
+        "Supports traceability from SAP intent to SDTM/ADaM deliverables."
     )
 
     st.info(
@@ -1689,10 +1691,10 @@ def _tab_pipeline():
     import threading
     from pipeline import step1_query  # noqa: imported for type reference only
 
-    st.header("Pipeline — Knowledge Base Builder")
+    st.header("Knowledge Base Builder")
     st.markdown(
-        "Query ClinicalTrials.gov for SAP documents, download PDFs, extract content "
-        "with Claude, and populate the knowledge base — all from this tab."
+        "Query ClinicalTrials.gov for SAP documents, download PDFs, and extract "
+        "structured content with Claude to build the Study Standards Lens knowledge base."
     )
 
     # ------------------------------------------------------------------
@@ -1984,9 +1986,9 @@ def _tab_pipeline():
 def main():
     _render_sidebar()
 
-    st.title("Standards Gate — CDISC Mapping Copilot")
+    st.title("Study Standards Lens")
     st.markdown(
-        "_A biometrics knowledge layer that converts SAPs into structured delivery metadata — "
+        "_AI-Assisted Review for SAP Completeness and CDISC Alignment · From Draft to Final — "
         "all outputs are **recommendations** that require human validation._"
     )
 
@@ -2016,7 +2018,7 @@ def main():
         for tab in tabs[1:9]:
             with tab:
                 st.info(
-                    "No SAP loaded. Use the **Input** tab to upload a PDF or look up a study.",
+                    "No SAP loaded. Use the **Input** tab to upload a PDF or load a study from the knowledge base.",
                     icon="👈",
                 )
         return
